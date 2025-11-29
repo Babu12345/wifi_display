@@ -1,0 +1,99 @@
+//! NFC controller task
+
+use crate::NUM_NOTIFICATION_RECEIVERS;
+use crate::NotificationType;
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, watch::Sender};
+use embassy_time::Timer;
+use esp_hal::{
+    Async,
+    gpio::{Input, Output},
+    i2c::master::I2c,
+};
+use esp_storage::FlashStorage;
+use nfc::{MAX_NFCDATA_SIZE, Nfc, STM25DV64KC};
+use storage::storage::PersistentStorage;
+#[embassy_executor::task]
+/// Handles NFC processing
+pub async fn task_nfc(
+    mut nfc: Nfc<STM25DV64KC, Input<'static>, Output<'static>, I2c<'static, Async>>,
+    notification: Sender<'static, NoopRawMutex, NotificationType, NUM_NOTIFICATION_RECEIVERS>,
+) {
+    // Initialize the NFC tag (formats NDEF and enables RF write access)
+    log::info!("Initializing NFC tag...");
+    match nfc.initialize_for_ndef_write_access().await {
+        Ok(_) => log::info!("✓ Tag initialized successfully"),
+        Err(e) => {
+            log::error!("✗ Initialization failed: {:?}", e);
+            return;
+        }
+    }
+
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut []);
+    let mut storage_data = [0u8; MAX_NFCDATA_SIZE];
+
+    'process: loop {
+        if let Err(_) = nfc.depower_board().await {
+            log::error!("failed to depower the board");
+            continue 'process;
+        }
+        Timer::after_millis(50).await;
+        log::info!("Ready - try writing from your phone now");
+        match nfc.wait_and_get_data().await {
+            Ok(data) => match data {
+                nfc::NFCData::Wifi(ref ssid, ref password) => {
+                    log::info!("SSID: {ssid}, PSWD: {password}");
+                    if let Err(e) = data.to_bytes(&mut storage_data) {
+                        log::error!("Serialization error: {e:?}");
+                        continue 'process;
+                    }
+                    if let Err(e) = storage.write_bytes(
+                        storage::storage::StorageContents::WifiCredentials,
+                        0,
+                        &storage_data,
+                    ) {
+                        log::error!("Storage error: {e:?}");
+                        continue 'process;
+                    }
+                    notification.send(NotificationType::WifiCredentials);
+                    log::info!("Successfully saved wifi in NVS")
+                }
+                nfc::NFCData::Text(ref text) => {
+                    log::info!("Text: {text}");
+
+                    // Regular text to display
+                    if let Err(e) = data.to_bytes(&mut storage_data) {
+                        log::error!("Serialization error: {e:?}");
+                        continue 'process;
+                    }
+                    if let Err(e) = storage.write_bytes(
+                        storage::storage::StorageContents::DisplayText,
+                        0,
+                        &storage_data,
+                    ) {
+                        log::error!("Storage error: {e:?}");
+                        continue 'process;
+                    }
+                    notification.send(NotificationType::DisplayText);
+                }
+                nfc::NFCData::Uri(ref uri) => {
+                    log::info!("URI: {uri}");
+                    if let Err(e) = data.to_bytes(&mut storage_data) {
+                        log::error!("Serialization error: {e:?}");
+                        continue 'process;
+                    }
+                    if let Err(e) = storage.write_bytes(
+                        storage::storage::StorageContents::DisplayURL,
+                        0,
+                        &storage_data,
+                    ) {
+                        log::error!("Storage error: {e:?}");
+                        continue 'process;
+                    }
+                    notification.send(NotificationType::DisplayURL);
+                }
+                nfc::NFCData::Unknown => log::error!("Unknown type"),
+            },
+            Err(_) => log::error!("Error occurred when NFC NDEF data"),
+        }
+    }
+}

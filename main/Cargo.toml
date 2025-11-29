@@ -1,0 +1,57 @@
+[package]
+name = "main"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+# External
+embassy-sync = "0.7.2"
+esp-backtrace = { version = "0.14.2", features = [
+    "esp32c3",
+    "exception-handler",
+    "println",
+    # "panic-handler",
+] }
+
+esp-hal = { version = "0.23.0", features = ["esp32c3"] }
+esp-println = { version = "0.12.0", features = ["esp32c3", "log"] }
+log = { version = "0.4.21" }
+esp-alloc = { version = "0.6.0" }
+embedded-io-async = "0.6.1"
+heapless = { version = "0.8.0", default-features = false }
+embassy-executor = { version = "0.7.0", features = ["task-arena-size-65536"] }
+embassy-time = { version = "^0.4", features = ["generic-queue-8"] }
+esp-hal-embassy = { version = "^0.6.0", features = ["esp32c3"] }
+static_cell = { version = "2.1.0" }
+esp-storage = { version = "0.4.0", features = ["esp32c3"] }
+
+esp-wifi = { version = "0.12.0", default-features = false, features = [
+    "esp32c3",
+    "esp-alloc",
+    "log",
+    "wifi",
+] }
+embassy-net = { version = "0.6.0", features = [
+    "tcp",
+    "udp",
+    "dhcpv4",
+    "medium-ethernet",
+    "proto-ipv6",
+    "log",
+    "dns",
+] }
+rust-mqtt = { version = "0.3.0", default-features = false }
+rand_core = { version = "0.6", default-features = false }
+esp-mbedtls = { git = "https://github.com/esp-rs/esp-mbedtls/", package = "esp-mbedtls", rev = "1806f8f622b08a9b54de91814eea13c6b3d9ff1c", default-features = false, features = [
+    "esp32c3",
+    "async",
+] }
+
+nfc = { git = "ssh://git@github.com/Babu12345/rusty_nfc.git", default-features = false }
+error = { git = "ssh://git@github.com/Babu12345/eink_display.git", default-features = false }
+spi = { git = "ssh://git@github.com/Babu12345/eink_display.git", default-features = false }
+display = { git = "ssh://git@github.com/Babu12345/eink_display.git", default-features = false }
+storage = { git = "ssh://git@github.com/Babu12345/display_storage.git", default-features = false }
+text = { git = "ssh://git@github.com/Babu12345/eink_display.git", default-features = false }
+url = { git = "ssh://git@github.com/Babu12345/eink_display.git", default-features = false }

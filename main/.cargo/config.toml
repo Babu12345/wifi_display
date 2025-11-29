@@ -1,0 +1,28 @@
+[target.riscv32imc-unknown-none-elf]
+runner = "espflash flash --monitor -f 20mhz -s 8mb"
+
+[build]
+target = "riscv32imc-unknown-none-elf"
+rustflags = [
+  # Required to obtain backtraces (e.g. when using the "esp-backtrace" crate.)
+  # NOTE: May negatively impact performance of produced code
+  "-C",
+  "force-frame-pointers",
+]
+
+[unstable]
+build-std = ["alloc", "core"]
+
+
+[alias]
+r = "run --release"
+s = "size --release"
+sa = "size --bin async_main --release -- -A"
+c = "check --release"
+# These 2 are from an external dependecency called cargo-bloat
+bf = "bloat --release -n 10" # Get the top 10 largest functions (by binary size)
+bc = "bloat --release --crates -n 10" # Get the top 10 largest crates (by binary size)
+f = "fmt"
+
+[net]
+git-fetch-with-cli = true
