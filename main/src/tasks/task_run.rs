@@ -625,7 +625,7 @@ async fn display_text<'a>(
         .with_font_size(FontSize::ExtraLarge24)
         .with_max_width(400)
         .with_alignment(Alignment::Left)
-        .with_position(1, 40)
+        .with_position(1, 30)
         .to_frame::<400, 300, { 400 * 300 / 8 }>();
 
     display_on
