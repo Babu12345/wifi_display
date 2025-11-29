@@ -670,7 +670,7 @@ async fn display_qr_code<'a>(
     // Calculate the optimal scale that fits within display bounds
     const DISPLAY_WIDTH: u32 = 400;
     const DISPLAY_HEIGHT: u32 = 300;
-    const MAX_SCALE: u32 = 10;
+    const MAX_SCALE: u32 = 7;
     const MIN_SCALE: u32 = 1;
 
     // Try maximum scale first - if it fits, we're done with one QR generation
