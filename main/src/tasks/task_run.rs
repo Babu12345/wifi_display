@@ -1,5 +1,6 @@
 //! Main wifi processor
 
+use core::ffi::CStr;
 use core::str::FromStr;
 
 use crate::NUM_NOTIFICATION_RECEIVERS;
@@ -30,12 +31,19 @@ pub const DEFAULT_PASSWORD: &str = "9526070855!";
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
 
+const MQTT_BROKER_CSTR: &CStr = c"avbh2adibwzla-ats.iot.us-east-2.amazonaws.com";
+const MQTT_PORT: u16 = 8883; // TLS port
+const MQTT_CLIENT_ID: &str = "client1";
+const MQTT_TOPIC1: &str = "example/test";
+const MQTT_TOPIC2: &str = "example/test1";
+const MQTT_TIMEOUT_SECS: u16 = 60;
+
 // Static buffers for MQTT to avoid stack overflow
 // Using raw static mut since MQTT function is called multiple times (StaticCell can only init once)
 static mut MQTT_TCP_RX_BUFFER: [u8; 2048] = [0u8; 2048];
 static mut MQTT_TCP_TX_BUFFER: [u8; 2048] = [0u8; 2048];
-static mut MQTT_RECV_BUFFER: [u8; 1024] = [0u8; 1024];
-static mut MQTT_WRITE_BUFFER: [u8; 1024] = [0u8; 1024];
+static mut MQTT_RECV_BUFFER: [u8; 2048] = [0u8; 2048];
+static mut MQTT_WRITE_BUFFER: [u8; 2048] = [0u8; 2048];
 
 const DISPLAY_TEXT_BUFFER_LENGTH: usize = 512;
 
@@ -311,7 +319,6 @@ async fn handle_live_mqtt_updates<'a>(
     >,
     tls: &'a esp_mbedtls::Tls<'a>,
 ) -> Result<NotificationType, &'static str> {
-    use core::ffi::CStr;
     use embassy_net::tcp::TcpSocket;
     use esp_mbedtls::{Certificates, Mode, TlsVersion, X509, asynch::Session};
     use rust_mqtt::client::{client::MqttClient, client_config::ClientConfig};
@@ -325,14 +332,6 @@ async fn handle_live_mqtt_updates<'a>(
 
     let config = stack.wait_for_ipaddress().await;
     log::info!("Acquired IP address for MQTT: {}", config.address);
-
-    // MQTT broker configuration - UPDATE THESE VALUES IF NEEDED
-    // For AWS IoT: example format "xxxxx-ats.iot.region.amazonaws.com"
-    const MQTT_BROKER_CSTR: &CStr = c"avbh2adibwzla-ats.iot.us-east-2.amazonaws.com";
-    const MQTT_PORT: u16 = 8883; // TLS port
-    const MQTT_CLIENT_ID: &str = "client1";
-    const MQTT_TOPIC: &str = "example/test";
-    const MQTT_TIMEOUT_SECS: u16 = 60;
 
     // DNS lookup for MQTT broker
     let broker_ip = stack
@@ -414,7 +413,7 @@ async fn handle_live_mqtt_updates<'a>(
         &mut rng,
     );
     config.add_client_id(MQTT_CLIENT_ID);
-    config.max_packet_size = 1024; // Reduced from 2048 to save memory
+    config.max_packet_size = 2048; // Reduced from 2048 to save memory
     config.keep_alive = MQTT_TIMEOUT_SECS;
 
     // Use static buffers to avoid stack overflow
@@ -447,8 +446,16 @@ async fn handle_live_mqtt_updates<'a>(
     }
 
     // Subscribe to topic
-    match client.subscribe_to_topic(MQTT_TOPIC).await {
-        Ok(_) => log::info!("Subscribed to topic: {}", MQTT_TOPIC),
+    match client.subscribe_to_topic(MQTT_TOPIC1).await {
+        Ok(_) => log::info!("Subscribed to topic: {}", MQTT_TOPIC1),
+        Err(e) => {
+            log::error!("MQTT subscription error: {:?}", e);
+            return Err("Failed to subscribe to MQTT topic");
+        }
+    }
+
+    match client.subscribe_to_topic(MQTT_TOPIC2).await {
+        Ok(_) => log::info!("Subscribed to topic: {}", MQTT_TOPIC2),
         Err(e) => {
             log::error!("MQTT subscription error: {:?}", e);
             return Err("Failed to subscribe to MQTT topic");
@@ -457,6 +464,7 @@ async fn handle_live_mqtt_updates<'a>(
 
     // Main MQTT receive loop
     loop {
+        client.send_ping().await.ok();
         // Check for any notification to exit MQTT mode
         // Capture the notification so we can return it for processing
         if let Some(notif) = notification.try_changed() {
@@ -473,19 +481,42 @@ async fn handle_live_mqtt_updates<'a>(
             Ok(Ok((topic, payload))) => {
                 log::info!("Received MQTT message on topic: {}", topic);
 
-                // Parse payload as UTF-8 text
-                if let Ok(text) = core::str::from_utf8(payload) {
-                    log::info!("Message: {}", text);
+                match topic {
+                    topic if topic == MQTT_TOPIC1 => {
+                        // Parse payload as UTF-8 text
+                        if let Ok(text) = core::str::from_utf8(payload) {
+                            log::info!("Message: {}", text);
 
-                    // Display the message
-                    indicator.toggle();
-                    match display_text(display, text).await {
-                        Ok(_) => log::info!("Successfully displayed MQTT message"),
-                        Err(e) => log::error!("Error displaying MQTT message: {:?}", e),
+                            // Display the message
+                            indicator.toggle();
+                            match display_text(display, text).await {
+                                Ok(_) => log::info!("Successfully displayed MQTT message"),
+                                Err(e) => log::error!("Error displaying MQTT message: {:?}", e),
+                            }
+                            indicator.toggle();
+                        } else {
+                            log::error!("Invalid UTF-8 in MQTT payload");
+                        }
                     }
-                    indicator.toggle();
-                } else {
-                    log::error!("Invalid UTF-8 in MQTT payload");
+                    topic if topic == MQTT_TOPIC2 => {
+                        // Parse payload as UTF-8 text
+                        if let Ok(text) = core::str::from_utf8(payload) {
+                            log::info!("Message: {}", text);
+
+                            // Display the message
+                            indicator.toggle();
+                            match display_qr_code(display, text).await {
+                                Ok(_) => log::info!("Successfully displayed MQTT message as URL"),
+                                Err(e) => {
+                                    log::error!("Error displaying MQTT message as URL: {e:?}")
+                                }
+                            }
+                            indicator.toggle();
+                        } else {
+                            log::error!("Invalid UTF-8 in MQTT payload");
+                        }
+                    }
+                    _ => log::error!("Topic not found"),
                 }
             }
             Ok(Err(e)) => {
