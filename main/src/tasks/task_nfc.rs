@@ -60,6 +60,14 @@ pub async fn task_nfc(
                 nfc::NFCData::Text(ref text) => {
                     log::info!("Text: {text}");
 
+                    // Check for special command to trigger live updates mode
+                    if text.as_str() == "LIVE_UPDATES" {
+                        log::info!("Live updates mode command received");
+                        notification.send(NotificationType::LiveSecureUpdates);
+                        log::info!("Switched to live updates mode");
+                        continue 'process;
+                    }
+
                     // Regular text to display
                     if let Err(e) = data.to_bytes(&mut storage_data) {
                         log::error!("Serialization error: {e:?}");
