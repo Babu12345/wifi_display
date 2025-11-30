@@ -1,5 +1,5 @@
 [target.riscv32imc-unknown-none-elf]
-runner = "espflash flash --monitor -f 20mhz -s 8mb"
+runner = "espflash flash --monitor -f 80mhz -s 8mb"
 
 [build]
 target = "riscv32imc-unknown-none-elf"

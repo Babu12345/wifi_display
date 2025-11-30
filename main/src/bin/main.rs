@@ -104,7 +104,7 @@ async fn main(spawner: Spawner) {
 
     let spi = Spi::new(
         peripherals.SPI2,
-        SPIConfig::default().with_frequency(8u32.MHz()),
+        SPIConfig::default().with_frequency(60u32.MHz()),
     )
     .unwrap()
     .with_mosi(peripherals.GPIO10)
