@@ -468,7 +468,7 @@ async fn handle_live_mqtt_updates<'a>(
         // Use select to await notification, ping timer, or MQTT message concurrently
         match select3(
             notification.changed(),
-            Timer::after(Duration::from_secs((MQTT_TIMEOUT_SECS / 2).into())),
+            Timer::after(Duration::from_secs((MQTT_TIMEOUT_SECS * 3 / 4).into())),
             client.receive_message(),
         )
         .await
