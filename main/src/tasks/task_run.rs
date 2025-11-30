@@ -6,9 +6,10 @@ use core::str::FromStr;
 use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::{AsyncStack, NotificationType, spi::SpiV2};
 use display::{Display, EPD417, EPD417_SIZE, OFF};
+use embassy_futures::select::{Either3, select3};
 use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, watch::Receiver};
-use embassy_time::{Duration, Timer, WithTimeout};
+use embassy_time::{Duration, Timer};
 use rand_core::CryptoRngCore;
 
 use core::cell::RefCell;
@@ -464,21 +465,25 @@ async fn handle_live_mqtt_updates<'a>(
 
     // Main MQTT receive loop
     loop {
-        client.send_ping().await.ok();
-        // Check for any notification to exit MQTT mode
-        // Capture the notification so we can return it for processing
-        if let Some(notif) = notification.try_changed() {
-            log::info!("Notification received: {:?}, exiting MQTT mode", notif);
-            return Ok(notif);
-        }
-
-        // Receive messages
-        match client
-            .receive_message()
-            .with_timeout(Duration::from_secs(1))
-            .await
+        // Use select to await notification, ping timer, or MQTT message concurrently
+        match select3(
+            notification.changed(),
+            Timer::after(Duration::from_secs((MQTT_TIMEOUT_SECS / 2).into())),
+            client.receive_message(),
+        )
+        .await
         {
-            Ok(Ok((topic, payload))) => {
+            // Notification received - exit MQTT mode
+            Either3::First(notif) => {
+                log::info!("Notification received: {:?}, exiting MQTT mode", notif);
+                return Ok(notif);
+            }
+            // Ping timer - send keep-alive
+            Either3::Second(_) => {
+                client.send_ping().await.ok();
+            }
+            // MQTT message received
+            Either3::Third(Ok((topic, payload))) => {
                 log::info!("Received MQTT message on topic: {}", topic);
 
                 match topic {
@@ -519,15 +524,13 @@ async fn handle_live_mqtt_updates<'a>(
                     _ => log::error!("Topic not found"),
                 }
             }
-            Ok(Err(e)) => {
+            // MQTT receive error
+            Either3::Third(Err(e)) => {
+                // ImplementationSpecificError typically means no message available, ignore it
                 log::error!("MQTT receive error: {:?}", e);
                 if e != ReasonCode::ImplementationSpecificError {
                     return Err("MQTT receive error");
                 }
-            }
-            Err(_) => {
-                // Timeout - continue waiting
-                Timer::after(Duration::from_millis(100)).await;
             }
         }
     }

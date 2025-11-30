@@ -7,6 +7,7 @@ edition = "2024"
 
 # External
 embassy-sync = "0.7.2"
+embassy-futures = "0.1.1"
 esp-backtrace = { version = "0.14.2", features = [
     "esp32c3",
     "exception-handler",
