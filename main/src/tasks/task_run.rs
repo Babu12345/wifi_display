@@ -414,7 +414,7 @@ async fn handle_live_mqtt_updates<'a>(
         &mut rng,
     );
     config.add_client_id(MQTT_CLIENT_ID);
-    config.max_packet_size = 2048; // Reduced from 2048 to save memory
+    config.max_packet_size = 2048;
     config.keep_alive = MQTT_TIMEOUT_SECS;
 
     // Use static buffers to avoid stack overflow
