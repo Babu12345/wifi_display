@@ -476,6 +476,7 @@ async fn handle_live_mqtt_updates<'a>(
             // Notification received - exit MQTT mode
             Either3::First(notif) => {
                 log::info!("Notification received: {:?}, exiting MQTT mode", notif);
+                client.disconnect().await.ok();
                 return Ok(notif);
             }
             // Ping timer - send keep-alive
@@ -529,6 +530,7 @@ async fn handle_live_mqtt_updates<'a>(
                 // ImplementationSpecificError typically means no message available, ignore it
                 log::error!("MQTT receive error: {:?}", e);
                 if e != ReasonCode::ImplementationSpecificError {
+                    client.disconnect().await.ok();
                     return Err("MQTT receive error");
                 }
             }
