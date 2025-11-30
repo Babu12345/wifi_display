@@ -43,7 +43,7 @@ embassy-net = { version = "0.6.0", features = [
 ] }
 rust-mqtt = { version = "0.3.0", default-features = false }
 rand_core = { version = "0.6", default-features = false }
-esp-mbedtls = { git = "https://github.com/esp-rs/esp-mbedtls/", package = "esp-mbedtls", rev = "1806f8f622b08a9b54de91814eea13c6b3d9ff1c", default-features = false, features = [
+esp-mbedtls = { git = "https://github.com/Babu12345/esp-mbedtls/", package = "esp-mbedtls", rev = "1806f8f622b08a9b54de91814eea13c6b3d9ff1c", default-features = false, features = [
     "esp32c3",
     "async",
 ] }
