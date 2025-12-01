@@ -37,7 +37,7 @@ const MQTT_PORT: u16 = 8883; // TLS port
 const MQTT_CLIENT_ID: &str = "client1";
 const MQTT_TOPIC1: &str = "example/test";
 const MQTT_TOPIC2: &str = "example/test1";
-const MQTT_TIMEOUT_SECS: u16 = 60;
+const MQTT_TIMEOUT_SECS: u16 = 120;
 
 // Static buffers for MQTT to avoid stack overflow
 // Using raw static mut since MQTT function is called multiple times (StaticCell can only init once)
