@@ -9,6 +9,7 @@ use embassy_executor::Spawner;
 use embassy_net::StackResources;
 
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::channel::Channel;
 use embassy_sync::watch::Watch;
 use esp_hal::gpio::{Level, Pull};
 use esp_hal::i2c::master::{Config as I2CConfig, I2c};
@@ -29,7 +30,7 @@ use esp_wifi::wifi::WifiStaDevice;
 use main::NUM_NOTIFICATION_RECEIVERS;
 use main::spi::SpiV2;
 use main::tasks::task_nfc::task_nfc;
-use main::tasks::task_run::task_run;
+use main::tasks::task_run::{task_run, task_display_handler, DisplayMessage, DISPLAY_CHANNEL_SIZE};
 use main::tasks::task_wifi_runner::task_wifi_runner;
 use main::{NotificationType, initalize_logger, initialize_peripherals, mk_static};
 use nfc::{Nfc, STM25DV64KC};
@@ -118,6 +119,12 @@ async fn main(spawner: Spawner) {
     )
     .build();
 
+    // Create display channel for rate-limited display updates
+    let display_channel = mk_static!(
+        Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
+        Channel::<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>::new()
+    );
+
     let gpo = Input::new(peripherals.GPIO9, Pull::Up);
     let vcc_nfc = Output::new(peripherals.GPIO3, Level::Low);
     let i2c = I2c::new(peripherals.I2C0, I2CConfig::default())
@@ -136,13 +143,13 @@ async fn main(spawner: Spawner) {
 
     spawner.must_spawn(task_nfc(nfc, sender));
     spawner.must_spawn(task_wifi_runner(runner));
+    spawner.must_spawn(task_display_handler(display, display_channel, indicator));
     spawner.must_spawn(task_run(
         stack,
         rng_ref,
-        display,
-        indicator,
         wifi_controller,
         receiver,
+        display_channel,
         peripherals.SHA,
         peripherals.RSA,
     ));

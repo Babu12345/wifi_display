@@ -8,7 +8,7 @@ use crate::{AsyncStack, NotificationType, spi::SpiV2};
 use display::{Display, EPD417, EPD417_SIZE, OFF};
 use embassy_futures::select::{Either3, select3};
 use embassy_net::Stack;
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, watch::Receiver};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, watch::Receiver};
 use embassy_time::{Duration, Timer};
 use rand_core::CryptoRngCore;
 
@@ -47,6 +47,18 @@ static mut MQTT_RECV_BUFFER: [u8; 2048] = [0u8; 2048];
 static mut MQTT_WRITE_BUFFER: [u8; 2048] = [0u8; 2048];
 
 const DISPLAY_TEXT_BUFFER_LENGTH: usize = 512;
+/// Size of the display message channel
+pub const DISPLAY_CHANNEL_SIZE: usize = 5;
+const DISPLAY_UPDATE_DELAY_MS: u64 = 200; // Minimum delay between display updates
+
+/// Messages that can be sent to the display task
+#[derive(Debug, Clone, Copy)]
+pub enum DisplayMessage {
+    /// Display text on the screen
+    Text,
+    /// Display a QR code from URL
+    QRCode,
+}
 
 /// Display mode for the main task
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -59,11 +71,14 @@ enum DisplayMode {
     LiveUpdates,
 }
 
-/// Runner for the main wifi processing task
+// Static buffers for display data shared between tasks
+static mut DISPLAY_TEXT_BUFFER: [u8; DISPLAY_TEXT_BUFFER_LENGTH] = [0; DISPLAY_TEXT_BUFFER_LENGTH];
+static mut DISPLAY_URL_BUFFER: [u8; DISPLAY_TEXT_BUFFER_LENGTH] = [0; DISPLAY_TEXT_BUFFER_LENGTH];
+
+/// Display handler task that processes display messages from a channel
+/// This allows rate-limiting display updates without blocking data input
 #[embassy_executor::task]
-pub async fn task_run(
-    stack: Stack<'static>,
-    rng_ref: &'static RefCell<Trng<'static>>,
+pub async fn task_display_handler(
     mut display: Display<
         'static,
         SpiV2<'static, Async>,
@@ -73,9 +88,117 @@ pub async fn task_run(
         EPD417,
         OFF,
     >,
+    channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     mut indicator: Output<'static>,
+) {
+    loop {
+        // Wait for a display message
+        let message = channel.receive().await;
+        log::info!("Display task received message: {:?}", message);
+
+        indicator.toggle();
+
+        // Process the message
+        match message {
+            DisplayMessage::Text => {
+                let text = unsafe {
+                    use core::ptr::addr_of_mut;
+                    let buf = &*addr_of_mut!(DISPLAY_TEXT_BUFFER);
+                    // Find the null terminator or end of buffer
+                    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                    if let Ok(s) = core::str::from_utf8(&buf[..len]) {
+                        s
+                    } else {
+                        log::error!("Invalid UTF-8 in text buffer");
+                        continue;
+                    }
+                };
+
+                if !text.is_empty() {
+                    match display_text(&mut display, text).await {
+                        Ok(_) => log::info!("Successfully displayed text"),
+                        Err(e) => log::error!("Error displaying text: {:?}", e),
+                    }
+                }
+            }
+            DisplayMessage::QRCode => {
+                let url = unsafe {
+                    use core::ptr::addr_of_mut;
+                    let buf = &*addr_of_mut!(DISPLAY_URL_BUFFER);
+                    // Find the null terminator or end of buffer
+                    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                    if let Ok(s) = core::str::from_utf8(&buf[..len]) {
+                        s
+                    } else {
+                        log::error!("Invalid UTF-8 in URL buffer");
+                        continue;
+                    }
+                };
+
+                if !url.is_empty() {
+                    match display_qr_code(&mut display, url).await {
+                        Ok(_) => log::info!("Successfully displayed QR code"),
+                        Err(e) => log::error!("Error displaying QR code: {:?}", e),
+                    }
+                }
+            }
+        }
+
+        indicator.toggle();
+
+        // Rate limit: wait before allowing next display update
+        Timer::after(Duration::from_millis(DISPLAY_UPDATE_DELAY_MS)).await;
+    }
+}
+
+/// Store text in the display task's buffer and send message to display it
+pub fn queue_text_display(
+    channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
+    text: &str,
+) {
+    unsafe {
+        use core::ptr::addr_of_mut;
+        let buf = &mut *addr_of_mut!(DISPLAY_TEXT_BUFFER);
+        buf.fill(0);
+        let text_bytes = text.as_bytes();
+        let len = core::cmp::min(text_bytes.len(), buf.len());
+        buf[..len].copy_from_slice(&text_bytes[..len]);
+    }
+
+    // Try to send, drop oldest message if channel is full
+    if channel.try_send(DisplayMessage::Text).is_err() {
+        log::warn!("Display channel full, message may be dropped");
+    }
+}
+
+/// Store URL in the display task's buffer and send message to display it
+pub fn queue_qr_display(
+    channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
+    url: &str,
+) {
+    unsafe {
+        use core::ptr::addr_of_mut;
+        let buf = &mut *addr_of_mut!(DISPLAY_URL_BUFFER);
+        buf.fill(0);
+        let url_bytes = url.as_bytes();
+        let len = core::cmp::min(url_bytes.len(), buf.len());
+        buf[..len].copy_from_slice(&url_bytes[..len]);
+    }
+
+    // Try to send, drop oldest message if channel is full
+    if channel.try_send(DisplayMessage::QRCode).is_err() {
+        log::warn!("Display channel full, message may be dropped");
+    }
+}
+
+/// Runner for the main wifi processing task
+#[embassy_executor::task]
+pub async fn task_run(
+    stack: Stack<'static>,
+    rng_ref: &'static RefCell<Trng<'static>>,
     mut controller: WifiController<'static>,
     mut notification: Receiver<'static, NoopRawMutex, NotificationType, NUM_NOTIFICATION_RECEIVERS>,
+    display_channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     sha: peripherals::SHA,
     rsa: peripherals::RSA,
 ) {
@@ -100,14 +223,11 @@ pub async fn task_run(
             log::info!("DisplayText notification received");
             display_mode = DisplayMode::CustomText;
 
-            // Load and display custom text from storage
+            // Load and queue custom text for display
             match load_display_text(&mut storage) {
                 Ok(text) => {
-                    log::info!("Displaying custom text: {}", text.as_str());
-                    match display_text(&mut display, &text).await {
-                        Ok(_) => log::info!("Successfully displayed custom text"),
-                        Err(e) => log::error!("Error displaying custom text: {:?}", e),
-                    }
+                    log::info!("Queueing custom text for display: {}", text.as_str());
+                    queue_text_display(display_channel, &text);
                 }
                 Err(e) => {
                     log::error!("Failed to load display text: {}", e);
@@ -133,14 +253,11 @@ pub async fn task_run(
             log::info!("DisplayURL notification received");
             display_mode = DisplayMode::QRCode;
 
-            // Load and display QR code from URL in storage
+            // Load and queue QR code for display
             match load_display_url(&mut storage) {
                 Ok(url) => {
-                    log::info!("Displaying QR code for URL: {}", url.as_str());
-                    match display_qr_code(&mut display, url.as_str()).await {
-                        Ok(_) => log::info!("Successfully displayed QR code"),
-                        Err(e) => log::error!("Error displaying QR code: {:?}", e),
-                    }
+                    log::info!("Queueing QR code for display: {}", url.as_str());
+                    queue_qr_display(display_channel, url.as_str());
                 }
                 Err(e) => {
                     log::error!("Failed to load URL: {}", e);
@@ -233,10 +350,8 @@ pub async fn task_run(
                     "WiFi Connection\nFailed\n-------------------\nPlease tap with\nNFC to update",
                 ) && previously_connected
                 {
-                    match display_text(&mut display, &text).await {
-                        Ok(_) => log::info!("Successfully updated display with error message"),
-                        Err(e) => log::error!("Error updating display: {:?}", e),
-                    }
+                    queue_text_display(display_channel, &text);
+                    log::info!("Queued WiFi error message for display");
                 }
                 Timer::after(Duration::from_secs(5)).await;
                 previously_connected = false;
@@ -249,9 +364,8 @@ pub async fn task_run(
             match handle_live_mqtt_updates(
                 &stack,
                 rng_ref,
-                &mut display,
-                &mut indicator,
                 &mut notification,
+                display_channel,
                 &tls,
             )
             .await
@@ -302,22 +416,13 @@ pub async fn task_run(
 async fn handle_live_mqtt_updates<'a>(
     stack: &Stack<'static>,
     rng_ref: &'static RefCell<Trng<'static>>,
-    display: &mut Display<
-        'static,
-        SpiV2<'static, Async>,
-        Input<'static>,
-        Output<'static>,
-        EPD417_SIZE,
-        EPD417,
-        OFF,
-    >,
-    indicator: &mut Output<'static>,
     notification: &mut Receiver<
         'static,
         NoopRawMutex,
         NotificationType,
         NUM_NOTIFICATION_RECEIVERS,
     >,
+    display_channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     tls: &'a esp_mbedtls::Tls<'a>,
 ) -> Result<NotificationType, &'static str> {
     use embassy_net::tcp::TcpSocket;
@@ -493,13 +598,8 @@ async fn handle_live_mqtt_updates<'a>(
                         if let Ok(text) = core::str::from_utf8(payload) {
                             log::info!("Message: {}", text);
 
-                            // Display the message
-                            indicator.toggle();
-                            match display_text(display, text).await {
-                                Ok(_) => log::info!("Successfully displayed MQTT message"),
-                                Err(e) => log::error!("Error displaying MQTT message: {:?}", e),
-                            }
-                            indicator.toggle();
+                            // Queue the message for display
+                            queue_text_display(display_channel, text);
                         } else {
                             log::error!("Invalid UTF-8 in MQTT payload");
                         }
@@ -509,15 +609,8 @@ async fn handle_live_mqtt_updates<'a>(
                         if let Ok(text) = core::str::from_utf8(payload) {
                             log::info!("Message: {}", text);
 
-                            // Display the message
-                            indicator.toggle();
-                            match display_qr_code(display, text).await {
-                                Ok(_) => log::info!("Successfully displayed MQTT message as URL"),
-                                Err(e) => {
-                                    log::error!("Error displaying MQTT message as URL: {e:?}")
-                                }
-                            }
-                            indicator.toggle();
+                            // Queue the URL for display as QR code
+                            queue_qr_display(display_channel, text);
                         } else {
                             log::error!("Invalid UTF-8 in MQTT payload");
                         }
