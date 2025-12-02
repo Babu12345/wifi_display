@@ -52,16 +52,18 @@ pub async fn task_display_handler(
         // Process the message
         match message {
             DisplayMessage::Text => {
-                let text = unsafe {
-                    use core::ptr::addr_of_mut;
-                    let buf = &*addr_of_mut!(DISPLAY_TEXT_BUFFER);
+                // SAFETY: DISPLAY_TEXT_BUFFER is static, so we can create a static reference to it
+                let text: &'static str = unsafe {
+                    use core::ptr::addr_of;
+                    let buf: &'static [u8] = &*addr_of!(DISPLAY_TEXT_BUFFER);
                     // Find the null terminator or end of buffer
                     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-                    if let Ok(s) = core::str::from_utf8(&buf[..len]) {
-                        s
-                    } else {
-                        log::error!("Invalid UTF-8 in text buffer");
-                        continue;
+                    match core::str::from_utf8(&buf[..len]) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            log::error!("Invalid UTF-8 in text buffer");
+                            continue;
+                        }
                     }
                 };
 
@@ -73,16 +75,18 @@ pub async fn task_display_handler(
                 }
             }
             DisplayMessage::QRCode => {
-                let url = unsafe {
-                    use core::ptr::addr_of_mut;
-                    let buf = &*addr_of_mut!(DISPLAY_URL_BUFFER);
+                // SAFETY: DISPLAY_URL_BUFFER is static, so we can create a static reference to it
+                let url: &'static str = unsafe {
+                    use core::ptr::addr_of;
+                    let buf: &'static [u8] = &*addr_of!(DISPLAY_URL_BUFFER);
                     // Find the null terminator or end of buffer
                     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-                    if let Ok(s) = core::str::from_utf8(&buf[..len]) {
-                        s
-                    } else {
-                        log::error!("Invalid UTF-8 in URL buffer");
-                        continue;
+                    match core::str::from_utf8(&buf[..len]) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            log::error!("Invalid UTF-8 in URL buffer");
+                            continue;
+                        }
                     }
                 };
 
@@ -153,28 +157,16 @@ async fn display_text<'a>(
         EPD417,
         display::OFF,
     >,
-    text: &str,
+    text: &'static str,
 ) -> Result<(), &'static str> {
     log::info!("Updating display");
-
-    // Use a static buffer that we reuse each time
-    static mut DISPLAY_TEXT_BUFFER_INTERNAL: [u8; DISPLAY_TEXT_BUFFER_LENGTH] =
-        [0; DISPLAY_TEXT_BUFFER_LENGTH];
-    let static_text = unsafe {
-        use core::ptr::addr_of_mut;
-        let buf = &mut *addr_of_mut!(DISPLAY_TEXT_BUFFER_INTERNAL);
-        let text_bytes = text.as_bytes();
-        let len = core::cmp::min(text_bytes.len(), buf.len());
-        buf[..len].copy_from_slice(&text_bytes[..len]);
-        core::str::from_utf8(&buf[..len]).map_err(|_| "Invalid UTF-8")?
-    };
 
     let mut display_on = display
         .on()
         .await
         .map_err(|_| "Failed to turn on display")?;
 
-    let mut frame = Text::new(static_text)
+    let mut frame = Text::new(text)
         .with_font_size(FontSize::ExtraLarge24)
         .with_max_width(400)
         .with_alignment(Alignment::Left)
@@ -205,20 +197,9 @@ async fn display_qr_code<'a>(
         EPD417,
         display::OFF,
     >,
-    url: &str,
+    url: &'static str,
 ) -> Result<(), &'static str> {
     log::info!("Updating display with QR code");
-
-    // Store URL in static memory since Qr::new requires &'static str
-    static mut URL_BUFFER_INTERNAL: [u8; DISPLAY_TEXT_BUFFER_LENGTH] = [0; DISPLAY_TEXT_BUFFER_LENGTH];
-    let static_url = unsafe {
-        use core::ptr::addr_of_mut;
-        let buf = &mut *addr_of_mut!(URL_BUFFER_INTERNAL);
-        let url_bytes = url.as_bytes();
-        let len = core::cmp::min(url_bytes.len(), buf.len());
-        buf[..len].copy_from_slice(&url_bytes[..len]);
-        core::str::from_utf8(&buf[..len]).map_err(|_| "Invalid UTF-8")?
-    };
 
     // Calculate the optimal scale that fits within display bounds
     const DISPLAY_WIDTH: u32 = 400;
@@ -227,7 +208,7 @@ async fn display_qr_code<'a>(
     const MIN_SCALE: u32 = 1;
 
     // Try maximum scale first - if it fits, we're done with one QR generation
-    let qr = url::Qr::new(static_url).with_scale(MAX_SCALE);
+    let qr = url::Qr::new(url).with_scale(MAX_SCALE);
     let (qr, qr_size) = if let Some(max_size) = qr.size() {
         if max_size <= DISPLAY_WIDTH && max_size <= DISPLAY_HEIGHT {
             // Maximum scale fits, use it!
@@ -235,7 +216,7 @@ async fn display_qr_code<'a>(
         } else {
             // Need to calculate smaller scale
             // Generate at scale 1 to get base module count
-            let base_qr = url::Qr::new(static_url).with_scale(MIN_SCALE);
+            let base_qr = url::Qr::new(url).with_scale(MIN_SCALE);
             let base_size = base_qr.size().ok_or("Failed to generate QR code")?;
 
             // Calculate maximum scale that fits: scale = min(width, height) / base_size
@@ -249,7 +230,7 @@ async fn display_qr_code<'a>(
             }
 
             let qr_size = base_size * calculated_scale;
-            let qr = url::Qr::new(static_url).with_scale(calculated_scale);
+            let qr = url::Qr::new(url).with_scale(calculated_scale);
             (qr, qr_size)
         }
     } else {
