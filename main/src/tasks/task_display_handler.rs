@@ -2,7 +2,11 @@
 
 use crate::spi::SpiV2;
 use display::{Display, EPD417, EPD417_SIZE};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
+use embassy_sync::{
+    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
+    channel::Channel,
+    mutex::Mutex,
+};
 use embassy_time::{Duration, Timer};
 use esp_hal::{Async, gpio::Output};
 use esp_storage::FlashStorage;
@@ -22,9 +26,11 @@ pub enum DisplayMessage {
     QRCode,
 }
 
-// Static buffers for display data shared between tasks
-static mut DISPLAY_TEXT_BUFFER: [u8; DISPLAY_TEXT_BUFFER_LENGTH] = [0; DISPLAY_TEXT_BUFFER_LENGTH];
-static mut DISPLAY_URL_BUFFER: [u8; DISPLAY_TEXT_BUFFER_LENGTH] = [0; DISPLAY_TEXT_BUFFER_LENGTH];
+// Static buffers for display data protected by mutexes
+static DISPLAY_TEXT_BUFFER: Mutex<CriticalSectionRawMutex, [u8; DISPLAY_TEXT_BUFFER_LENGTH]> =
+    Mutex::new([0; DISPLAY_TEXT_BUFFER_LENGTH]);
+static DISPLAY_URL_BUFFER: Mutex<CriticalSectionRawMutex, [u8; DISPLAY_TEXT_BUFFER_LENGTH]> =
+    Mutex::new([0; DISPLAY_TEXT_BUFFER_LENGTH]);
 
 /// Display handler task that processes display messages from a channel
 /// This allows rate-limiting display updates without blocking data input
@@ -52,48 +58,34 @@ pub async fn task_display_handler(
         // Process the message
         match message {
             DisplayMessage::Text => {
-                // SAFETY: DISPLAY_TEXT_BUFFER is static, so we can create a static reference to it
-                let text: &'static str = unsafe {
-                    use core::ptr::addr_of;
-                    let buf: &'static [u8] = &*addr_of!(DISPLAY_TEXT_BUFFER);
-                    // Find the null terminator or end of buffer
-                    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-                    match core::str::from_utf8(&buf[..len]) {
-                        Ok(s) => s,
-                        Err(_) => {
-                            log::error!("Invalid UTF-8 in text buffer");
-                            continue;
+                let buf = DISPLAY_TEXT_BUFFER.lock().await;
+                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                match core::str::from_utf8(&buf[..len]) {
+                    Ok(text) if !text.is_empty() => {
+                        match display_text(&mut display, text).await {
+                            Ok(_) => log::info!("Successfully displayed text"),
+                            Err(e) => log::error!("Error displaying text: {:?}", e),
                         }
                     }
-                };
-
-                if !text.is_empty() {
-                    match display_text(&mut display, text).await {
-                        Ok(_) => log::info!("Successfully displayed text"),
-                        Err(e) => log::error!("Error displaying text: {:?}", e),
+                    Ok(_) => {} // Empty text, do nothing
+                    Err(_) => {
+                        log::error!("Invalid UTF-8 in text buffer");
                     }
                 }
             }
             DisplayMessage::QRCode => {
-                // SAFETY: DISPLAY_URL_BUFFER is static, so we can create a static reference to it
-                let url: &'static str = unsafe {
-                    use core::ptr::addr_of;
-                    let buf: &'static [u8] = &*addr_of!(DISPLAY_URL_BUFFER);
-                    // Find the null terminator or end of buffer
-                    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-                    match core::str::from_utf8(&buf[..len]) {
-                        Ok(s) => s,
-                        Err(_) => {
-                            log::error!("Invalid UTF-8 in URL buffer");
-                            continue;
+                let buf = DISPLAY_URL_BUFFER.lock().await;
+                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                match core::str::from_utf8(&buf[..len]) {
+                    Ok(url) if !url.is_empty() => {
+                        match display_qr_code(&mut display, url).await {
+                            Ok(_) => log::info!("Successfully displayed QR code"),
+                            Err(e) => log::error!("Error displaying QR code: {:?}", e),
                         }
                     }
-                };
-
-                if !url.is_empty() {
-                    match display_qr_code(&mut display, url).await {
-                        Ok(_) => log::info!("Successfully displayed QR code"),
-                        Err(e) => log::error!("Error displaying QR code: {:?}", e),
+                    Ok(_) => {} // Empty URL, do nothing
+                    Err(_) => {
+                        log::error!("Invalid UTF-8 in URL buffer");
                     }
                 }
             }
@@ -111,13 +103,14 @@ pub fn queue_text_display(
     channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     text: &str,
 ) {
-    unsafe {
-        use core::ptr::addr_of_mut;
-        let buf = &mut *addr_of_mut!(DISPLAY_TEXT_BUFFER);
+    if let Ok(mut buf) = DISPLAY_TEXT_BUFFER.try_lock() {
         buf.fill(0);
         let text_bytes = text.as_bytes();
         let len = core::cmp::min(text_bytes.len(), buf.len());
         buf[..len].copy_from_slice(&text_bytes[..len]);
+    } else {
+        log::warn!("Display text buffer locked, skipping update");
+        return;
     }
 
     // Try to send, drop oldest message if channel is full
@@ -131,13 +124,14 @@ pub fn queue_qr_display(
     channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     url: &str,
 ) {
-    unsafe {
-        use core::ptr::addr_of_mut;
-        let buf = &mut *addr_of_mut!(DISPLAY_URL_BUFFER);
+    if let Ok(mut buf) = DISPLAY_URL_BUFFER.try_lock() {
         buf.fill(0);
         let url_bytes = url.as_bytes();
         let len = core::cmp::min(url_bytes.len(), buf.len());
         buf[..len].copy_from_slice(&url_bytes[..len]);
+    } else {
+        log::warn!("Display URL buffer locked, skipping update");
+        return;
     }
 
     // Try to send, drop oldest message if channel is full
@@ -147,7 +141,7 @@ pub fn queue_qr_display(
 }
 
 /// Update the e-ink display with text
-async fn display_text<'a>(
+async fn display_text<'a, 'b>(
     display: &'a mut Display<
         'static,
         SpiV2<'static, Async>,
@@ -157,7 +151,7 @@ async fn display_text<'a>(
         EPD417,
         display::OFF,
     >,
-    text: &'static str,
+    text: &'b str,
 ) -> Result<(), &'static str> {
     log::info!("Updating display");
 
@@ -187,7 +181,7 @@ async fn display_text<'a>(
 }
 
 /// Update the e-ink display with a QR code from URL
-async fn display_qr_code<'a>(
+async fn display_qr_code<'a, 'b>(
     display: &'a mut Display<
         'static,
         SpiV2<'static, Async>,
@@ -197,7 +191,7 @@ async fn display_qr_code<'a>(
         EPD417,
         display::OFF,
     >,
-    url: &'static str,
+    url: &'b str,
 ) -> Result<(), &'static str> {
     log::info!("Updating display with QR code");
 

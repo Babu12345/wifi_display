@@ -4,8 +4,10 @@ use core::ffi::CStr;
 use core::str::FromStr;
 
 use crate::NUM_NOTIFICATION_RECEIVERS;
+use crate::tasks::task_display_handler::{
+    DISPLAY_CHANNEL_SIZE, DisplayMessage, queue_qr_display, queue_text_display,
+};
 use crate::{AsyncStack, NotificationType};
-use crate::tasks::task_display_handler::{queue_text_display, queue_qr_display, DisplayMessage, DISPLAY_CHANNEL_SIZE};
 use embassy_futures::select::{Either3, select3};
 use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, watch::Receiver};
@@ -35,11 +37,13 @@ const MQTT_TOPIC2: &str = "example/test1";
 const MQTT_TIMEOUT_SECS: u16 = 120;
 
 // Static buffers for MQTT to avoid stack overflow
-// Using raw static mut since MQTT function is called multiple times (StaticCell can only init once)
-static mut MQTT_TCP_RX_BUFFER: [u8; 2048] = [0u8; 2048];
-static mut MQTT_TCP_TX_BUFFER: [u8; 2048] = [0u8; 2048];
-static mut MQTT_RECV_BUFFER: [u8; 2048] = [0u8; 2048];
-static mut MQTT_WRITE_BUFFER: [u8; 2048] = [0u8; 2048];
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
+
+// Static buffers for MQTT protected by mutexes to prevent concurrent access
+static MQTT_TCP_RX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 2048]> = Mutex::new([0u8; 2048]);
+static MQTT_TCP_TX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 2048]> = Mutex::new([0u8; 2048]);
+static MQTT_RECV_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 2048]> = Mutex::new([0u8; 2048]);
+static MQTT_WRITE_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 2048]> = Mutex::new([0u8; 2048]);
 
 const DISPLAY_TEXT_BUFFER_LENGTH: usize = 512;
 
@@ -319,14 +323,9 @@ async fn handle_live_mqtt_updates<'a>(
     log::info!("MQTT broker IP: {}", broker_ip);
 
     // Use static buffers to avoid stack overflow
-    // SAFETY: This function is only called from one task, no concurrent access
-    let (rx_buffer, tx_buffer) = unsafe {
-        (
-            &mut *core::ptr::addr_of_mut!(MQTT_TCP_RX_BUFFER),
-            &mut *core::ptr::addr_of_mut!(MQTT_TCP_TX_BUFFER),
-        )
-    };
-    let mut socket = TcpSocket::new(stack.clone(), rx_buffer, tx_buffer);
+    let mut rx_buffer = MQTT_TCP_RX_BUFFER.lock().await;
+    let mut tx_buffer = MQTT_TCP_TX_BUFFER.lock().await;
+    let mut socket = TcpSocket::new(stack.clone(), &mut *rx_buffer, &mut *tx_buffer);
     socket.set_timeout(Some(Duration::from_secs(MQTT_TIMEOUT_SECS as u64)));
 
     // Connect to MQTT broker
@@ -386,21 +385,16 @@ async fn handle_live_mqtt_updates<'a>(
     config.keep_alive = MQTT_TIMEOUT_SECS;
 
     // Use static buffers to avoid stack overflow
-    // SAFETY: This function is only called from one task, no concurrent access
-    let (recv_buffer, write_buffer) = unsafe {
-        (
-            &mut *core::ptr::addr_of_mut!(MQTT_RECV_BUFFER),
-            &mut *core::ptr::addr_of_mut!(MQTT_WRITE_BUFFER),
-        )
-    };
+    let mut recv_buffer = MQTT_RECV_BUFFER.lock().await;
+    let mut write_buffer = MQTT_WRITE_BUFFER.lock().await;
     let write_len = write_buffer.len();
     let read_len = recv_buffer.len();
 
     let mut client = MqttClient::<_, 5, _>::new(
         session,
-        write_buffer,
+        &mut *write_buffer,
         write_len,
-        recv_buffer,
+        &mut *recv_buffer,
         read_len,
         config,
     );
