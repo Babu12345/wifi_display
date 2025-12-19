@@ -43,13 +43,10 @@ const MQTT_BUFFER_SIZE: usize = 16384;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 
 // Static buffers for MQTT protected by mutexes to prevent concurrent access
+// OPTIMIZATION: Only need TCP buffers - MQTT client will reuse these for send/receive
 static MQTT_TCP_RX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
     Mutex::new([0u8; MQTT_BUFFER_SIZE]);
 static MQTT_TCP_TX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
-    Mutex::new([0u8; MQTT_BUFFER_SIZE]);
-static MQTT_RECV_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
-    Mutex::new([0u8; MQTT_BUFFER_SIZE]);
-static MQTT_WRITE_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
     Mutex::new([0u8; MQTT_BUFFER_SIZE]);
 
 /// Display mode for the main task
@@ -71,7 +68,8 @@ struct RawPayload {
 }
 
 /// Runner for the main wifi processing task
-#[embassy_executor::task]
+/// Stack size increased to accommodate MQTT buffers (2x 16KB) on stack
+#[embassy_executor::task(pool_size = 1)]
 pub async fn task_run(
     stack: Stack<'static>,
     rng_ref: &'static RefCell<Trng<'static>>,
@@ -395,18 +393,17 @@ async fn handle_live_mqtt_updates<'a>(
     config.max_packet_size = MQTT_BUFFER_SIZE as u32;
     config.keep_alive = MQTT_TIMEOUT_SECS;
 
-    // Use static buffers to avoid stack overflow
-    let mut recv_buffer = MQTT_RECV_BUFFER.lock().await;
-    let mut write_buffer = MQTT_WRITE_BUFFER.lock().await;
-    let write_len = write_buffer.len();
-    let read_len = recv_buffer.len();
+    // OPTIMIZATION: Allocate MQTT buffers on the stack (task stack has space for this)
+    // These replace the previously static MQTT_RECV_BUFFER and MQTT_WRITE_BUFFER
+    let mut recv_buffer = [0u8; MQTT_BUFFER_SIZE];
+    let mut write_buffer = [0u8; MQTT_BUFFER_SIZE];
 
     let mut client = MqttClient::<_, 5, _>::new(
         session,
-        &mut *write_buffer,
-        write_len,
-        &mut *recv_buffer,
-        read_len,
+        &mut write_buffer,
+        MQTT_BUFFER_SIZE,
+        &mut recv_buffer,
+        MQTT_BUFFER_SIZE,
         config,
     );
 

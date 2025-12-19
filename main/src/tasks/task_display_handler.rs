@@ -45,9 +45,8 @@ struct BinaryPayload<'a> {
 }
 
 // Static buffers for display data protected by mutexes
-static DISPLAY_TEXT_BUFFER: Mutex<CriticalSectionRawMutex, [u8; DISPLAY_TEXT_BUFFER_LENGTH]> =
-    Mutex::new([0; DISPLAY_TEXT_BUFFER_LENGTH]);
-static DISPLAY_URL_BUFFER: Mutex<CriticalSectionRawMutex, [u8; DISPLAY_TEXT_BUFFER_LENGTH]> =
+// OPTIMIZATION: Text and URL share one buffer since they're never used simultaneously
+static DISPLAY_TEXT_URL_BUFFER: Mutex<CriticalSectionRawMutex, [u8; DISPLAY_TEXT_BUFFER_LENGTH]> =
     Mutex::new([0; DISPLAY_TEXT_BUFFER_LENGTH]);
 static RAW_DISPLAY_BUFFER: Mutex<CriticalSectionRawMutex, [u8; RAW_DISPLAY_BUFFER_SIZE]> =
     Mutex::new([0; RAW_DISPLAY_BUFFER_SIZE]);
@@ -78,7 +77,7 @@ pub async fn task_display_handler(
         // Process the message
         match message {
             DisplayMessage::Text => {
-                let buf = DISPLAY_TEXT_BUFFER.lock().await;
+                let buf = DISPLAY_TEXT_URL_BUFFER.lock().await;
                 let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
                 match core::str::from_utf8(&buf[..len]) {
                     Ok(text) if !text.is_empty() => match display_text(&mut display, text).await {
@@ -92,7 +91,7 @@ pub async fn task_display_handler(
                 }
             }
             DisplayMessage::QRCode => {
-                let buf = DISPLAY_URL_BUFFER.lock().await;
+                let buf = DISPLAY_TEXT_URL_BUFFER.lock().await;
                 let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
                 match core::str::from_utf8(&buf[..len]) {
                     Ok(url) if !url.is_empty() => match display_qr_code(&mut display, url).await {
@@ -135,7 +134,7 @@ pub fn queue_text_display(
     channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     text: &str,
 ) {
-    if let Ok(mut buf) = DISPLAY_TEXT_BUFFER.try_lock() {
+    if let Ok(mut buf) = DISPLAY_TEXT_URL_BUFFER.try_lock() {
         buf.fill(0);
         let text_bytes = text.as_bytes();
         let len = core::cmp::min(text_bytes.len(), buf.len());
@@ -156,7 +155,7 @@ pub fn queue_qr_display(
     channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     url: &str,
 ) {
-    if let Ok(mut buf) = DISPLAY_URL_BUFFER.try_lock() {
+    if let Ok(mut buf) = DISPLAY_TEXT_URL_BUFFER.try_lock() {
         buf.fill(0);
         let url_bytes = url.as_bytes();
         let len = core::cmp::min(url_bytes.len(), buf.len());
