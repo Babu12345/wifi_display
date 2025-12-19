@@ -365,7 +365,7 @@ async fn display_raw_binary<'a>(
         .map_err(|_| "Failed to turn on display")?;
 
     display_on
-        .update_and_save_frame::<FlashStorage>(&mut frame.match_size(0), true)
+        .update_and_save_frame::<FlashStorage>(&mut frame.match_size(0x00), true)
         .await
         .map_err(|_| "Failed to update display")?;
 

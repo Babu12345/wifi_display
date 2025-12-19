@@ -36,16 +36,17 @@ const MQTT_PORT: u16 = 8883; // TLS port
 // Client ID: Update this 6-character alphanumeric code for each board
 const MQTT_CLIENT_ID: &str = "A3F2C1";
 const MQTT_TIMEOUT_SECS: u16 = 120;
+// MQTT buffer size: 16KB to support 15KB raw binary display data + JSON overhead
+const MQTT_BUFFER_SIZE: usize = 16384;
 
 // Static buffers for MQTT to avoid stack overflow
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 
 // Static buffers for MQTT protected by mutexes to prevent concurrent access
-// Increased to 16KB to support 15KB raw binary display data + overhead
-static MQTT_TCP_RX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 16384]> = Mutex::new([0u8; 16384]);
-static MQTT_TCP_TX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 16384]> = Mutex::new([0u8; 16384]);
-static MQTT_RECV_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 16384]> = Mutex::new([0u8; 16384]);
-static MQTT_WRITE_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 16384]> = Mutex::new([0u8; 16384]);
+static MQTT_TCP_RX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> = Mutex::new([0u8; MQTT_BUFFER_SIZE]);
+static MQTT_TCP_TX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> = Mutex::new([0u8; MQTT_BUFFER_SIZE]);
+static MQTT_RECV_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> = Mutex::new([0u8; MQTT_BUFFER_SIZE]);
+static MQTT_WRITE_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> = Mutex::new([0u8; MQTT_BUFFER_SIZE]);
 
 /// Display mode for the main task
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -387,7 +388,7 @@ async fn handle_live_mqtt_updates<'a>(
         &mut rng,
     );
     config.add_client_id(MQTT_CLIENT_ID);
-    config.max_packet_size = 16384; // 16KB to support 15KB raw display data
+    config.max_packet_size = MQTT_BUFFER_SIZE as u32;
     config.keep_alive = MQTT_TIMEOUT_SECS;
 
     // Use static buffers to avoid stack overflow
