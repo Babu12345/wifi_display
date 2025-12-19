@@ -5,7 +5,8 @@ use core::str::FromStr;
 
 use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::tasks::task_display_handler::{
-    DISPLAY_CHANNEL_SIZE, DisplayMessage, queue_qr_display, queue_raw_display, queue_text_display,
+    BinaryPayload, DISPLAY_CHANNEL_SIZE, DisplayMessage, queue_qr_display, queue_raw_display,
+    queue_text_display,
 };
 use crate::{AsyncStack, NotificationType};
 use embassy_futures::select::{Either3, select3};
@@ -13,7 +14,6 @@ use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, watch::Receiver};
 use embassy_time::{Duration, Timer};
 use rand_core::CryptoRngCore;
-use serde::Deserialize;
 
 use core::cell::RefCell;
 use esp_hal::peripherals;
@@ -58,13 +58,6 @@ enum DisplayMode {
     QRCode,
     /// Live secure updates via MQTT
     LiveUpdates,
-}
-
-/// JSON payload structure for checking if MQTT response is required
-/// Expected format: {"data_in_bytes": [...], "requires_response": true/false}
-#[derive(Deserialize)]
-struct RawPayload {
-    requires_response: bool,
 }
 
 /// Runner for the main wifi processing task
@@ -471,7 +464,7 @@ async fn handle_live_mqtt_updates<'a>(
                         log::info!("Processing raw binary display data");
 
                         let requires_response = if let Ok((parsed, _)) =
-                            serde_json_core::from_slice::<RawPayload>(payload)
+                            serde_json_core::from_slice::<BinaryPayload>(payload)
                         {
                             parsed.requires_response
                         } else {

@@ -36,12 +36,13 @@ pub enum DisplayMessage {
 }
 
 /// JSON payload structure for raw binary display data
-/// Expected format: {"data_in_bytes": [byte1, byte2, ...], "requires_response": true/false}
+/// Expected format: {"frame": "base64_encoded_string", "requires_response": true/false}
 #[derive(Deserialize)]
-struct BinaryPayload<'a> {
+pub struct BinaryPayload<'a> {
     #[serde(borrow)]
-    frame: &'a [u8],
-    requires_response: bool,
+    frame: &'a str,
+    /// Message to the client on whether we require a response
+    pub requires_response: bool,
 }
 
 // Static buffer for all display data protected by mutex
@@ -80,7 +81,10 @@ pub async fn task_display_handler(
                 let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
                 // Only use first DISPLAY_TEXT_BUFFER_LENGTH bytes for text
                 let text_slice = &buf[..DISPLAY_TEXT_BUFFER_LENGTH];
-                let len = text_slice.iter().position(|&b| b == 0).unwrap_or(text_slice.len());
+                let len = text_slice
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(text_slice.len());
                 match core::str::from_utf8(&text_slice[..len]) {
                     Ok(text) if !text.is_empty() => match display_text(&mut display, text).await {
                         Ok(_) => log::info!("Successfully displayed text"),
@@ -96,7 +100,10 @@ pub async fn task_display_handler(
                 let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
                 // Only use first DISPLAY_TEXT_BUFFER_LENGTH bytes for URL
                 let url_slice = &buf[..DISPLAY_TEXT_BUFFER_LENGTH];
-                let len = url_slice.iter().position(|&b| b == 0).unwrap_or(url_slice.len());
+                let len = url_slice
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(url_slice.len());
                 match core::str::from_utf8(&url_slice[..len]) {
                     Ok(url) if !url.is_empty() => match display_qr_code(&mut display, url).await {
                         Ok(_) => log::info!("Successfully displayed QR code"),
@@ -371,7 +378,7 @@ async fn display_raw_binary<'a>(
         .map_err(|_| "Failed to turn on display")?;
 
     display_on
-        .update_and_save_frame::<FlashStorage>(&mut frame.match_size(0x00), true)
+        .update_and_save_frame::<FlashStorage>(&mut frame.as_bytes().match_size(0x00), true)
         .await
         .map_err(|_| "Failed to update display")?;
 
