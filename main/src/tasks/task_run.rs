@@ -463,27 +463,32 @@ async fn handle_live_mqtt_updates<'a>(
                     payload.len()
                 );
 
-                if topic == raw_topic.as_str() {
-                    // Handle raw binary display data
-                    log::info!("Processing raw binary display data");
+                match topic {
+                    topic if topic == raw_topic.as_str() => {
+                        // Handle raw binary display data
+                        log::info!("Processing raw binary display data");
 
-                    let requires_response = if let Ok((parsed, _)) =
-                        serde_json_core::from_slice::<RawPayload>(payload)
-                    {
-                        parsed.requires_response
-                    } else {
-                        log::warn!("Failed to parse requires_response field, defaulting to false");
-                        false
-                    };
+                        let requires_response = if let Ok((parsed, _)) =
+                            serde_json_core::from_slice::<RawPayload>(payload)
+                        {
+                            parsed.requires_response
+                        } else {
+                            log::warn!(
+                                "Failed to parse requires_response field, defaulting to false"
+                            );
+                            false
+                        };
 
-                    // Queue the display data
-                    queue_raw_display(display_channel, payload);
-                    log::info!("Raw display data queued successfully");
+                        // Queue the display data
+                        queue_raw_display(display_channel, payload);
+                        log::info!("Raw display data queued successfully");
 
-                    // Send response only if required
-                    if requires_response {
+                        // Send response only if required
+                        if !requires_response {
+                            log::info!("No response required");
+                            continue;
+                        }
                         let response_msg = b"{\"response\":\"success\"}";
-
                         if let Err(e) = client
                             .send_message(
                                 response_topic.as_str(),
@@ -497,11 +502,8 @@ async fn handle_live_mqtt_updates<'a>(
                         } else {
                             log::info!("Published success response to {}", response_topic.as_str());
                         }
-                    } else {
-                        log::info!("No response required");
                     }
-                } else {
-                    log::warn!("Received message on unexpected topic: {}", topic);
+                    _ => log::warn!("Received message on unexpected topic: {}", topic),
                 }
             }
             // MQTT receive error
