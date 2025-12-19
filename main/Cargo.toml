@@ -21,6 +21,8 @@ log = { version = "0.4.21" }
 esp-alloc = { version = "0.6.0" }
 embedded-io-async = "0.6.1"
 heapless = { version = "0.8.0", default-features = false }
+serde-json-core = "0.6.0"
+serde = { version = "1.0", default-features = false, features = ["derive"] }
 embassy-executor = { version = "0.7.0", features = ["task-arena-size-65536"] }
 embassy-time = { version = "^0.4", features = ["generic-queue-8"] }
 esp-hal-embassy = { version = "^0.6.0", features = ["esp32c3"] }

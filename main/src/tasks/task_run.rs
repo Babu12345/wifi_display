@@ -5,7 +5,7 @@ use core::str::FromStr;
 
 use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::tasks::task_display_handler::{
-    DISPLAY_CHANNEL_SIZE, DisplayMessage, queue_qr_display, queue_text_display,
+    DISPLAY_CHANNEL_SIZE, DisplayMessage, queue_qr_display, queue_raw_display, queue_text_display,
 };
 use crate::{AsyncStack, NotificationType};
 use embassy_futures::select::{Either3, select3};
@@ -28,31 +28,30 @@ pub const DEFAULT_SSID: &str = "HONESTWIFI-2325-2G";
 pub const DEFAULT_PASSWORD: &str = "9526070855!";
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
+const DISPLAY_TEXT_BUFFER_LENGTH: usize = 512;
 
 const MQTT_BROKER_CSTR: &CStr = c"avbh2adibwzla-ats.iot.us-east-2.amazonaws.com";
 const MQTT_PORT: u16 = 8883; // TLS port
-const MQTT_CLIENT_ID: &str = "client1";
-const MQTT_TOPIC1: &str = "example/test";
-const MQTT_TOPIC2: &str = "example/test1";
+// Client ID: Update this 6-character alphanumeric code for each board
+const MQTT_CLIENT_ID: &str = "A3F2C1";
 const MQTT_TIMEOUT_SECS: u16 = 120;
 
 // Static buffers for MQTT to avoid stack overflow
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 
 // Static buffers for MQTT protected by mutexes to prevent concurrent access
-static MQTT_TCP_RX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 2048]> = Mutex::new([0u8; 2048]);
-static MQTT_TCP_TX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 2048]> = Mutex::new([0u8; 2048]);
-static MQTT_RECV_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 2048]> = Mutex::new([0u8; 2048]);
-static MQTT_WRITE_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 2048]> = Mutex::new([0u8; 2048]);
-
-const DISPLAY_TEXT_BUFFER_LENGTH: usize = 512;
+// Increased to 16KB to support 15KB raw binary display data + overhead
+static MQTT_TCP_RX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 16384]> = Mutex::new([0u8; 16384]);
+static MQTT_TCP_TX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 16384]> = Mutex::new([0u8; 16384]);
+static MQTT_RECV_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 16384]> = Mutex::new([0u8; 16384]);
+static MQTT_WRITE_BUFFER: Mutex<CriticalSectionRawMutex, [u8; 16384]> = Mutex::new([0u8; 16384]);
 
 /// Display mode for the main task
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DisplayMode {
-    /// Display custom text from NFC
+    /// Display custom text from NFC (for low bandwidth)
     CustomText,
-    /// Display QR code from URL
+    /// Display QR code from URL via NFC (for low bandwidth)
     QRCode,
     /// Live secure updates via MQTT
     LiveUpdates,
@@ -82,12 +81,12 @@ pub async fn task_run(
 
     // Main loop - refresh every REFRESH_INTERVAL_SECS seconds
     'process: loop {
-        // Check for DisplayText notification
+        // Check for DisplayText notification (NFC - low bandwidth mode)
         if notification
             .try_changed_and(|val| *val == NotificationType::DisplayText)
             .is_some()
         {
-            log::info!("DisplayText notification received");
+            log::info!("DisplayText notification received (NFC)");
             display_mode = DisplayMode::CustomText;
 
             // Load and queue custom text for display
@@ -107,17 +106,16 @@ pub async fn task_run(
             controller.disconnect_async().await.ok();
             controller.stop_async().await.ok();
 
-            // Skip MTA updates until DisplayMTAUpdates notification
             Timer::after(Duration::from_secs(5)).await;
             continue 'process;
         }
 
-        // Check for DisplayURL notification
+        // Check for DisplayURL notification (NFC - low bandwidth mode)
         if notification
             .try_changed_and(|val| *val == NotificationType::DisplayURL)
             .is_some()
         {
-            log::info!("DisplayURL notification received");
+            log::info!("DisplayURL notification received (NFC)");
             display_mode = DisplayMode::QRCode;
 
             // Load and queue QR code for display
@@ -137,7 +135,6 @@ pub async fn task_run(
             controller.disconnect_async().await.ok();
             controller.stop_async().await.ok();
 
-            // Skip MTA updates until DisplayMTAUpdates notification
             Timer::after(Duration::from_secs(5)).await;
             continue 'process;
         }
@@ -151,10 +148,11 @@ pub async fn task_run(
             display_mode = DisplayMode::LiveUpdates;
         }
 
+        // Check display mode - skip WiFi for NFC-based display modes (low bandwidth)
         match display_mode {
             DisplayMode::LiveUpdates => {}
             DisplayMode::CustomText | DisplayMode::QRCode => {
-                log::info!("Skipping wifi connection");
+                log::info!("In NFC display mode, skipping wifi connection");
                 Timer::after(Duration::from_secs(5)).await;
                 continue 'process;
             }
@@ -381,7 +379,7 @@ async fn handle_live_mqtt_updates<'a>(
         &mut rng,
     );
     config.add_client_id(MQTT_CLIENT_ID);
-    config.max_packet_size = 2048;
+    config.max_packet_size = 16384; // 16KB to support 15KB raw display data
     config.keep_alive = MQTT_TIMEOUT_SECS;
 
     // Use static buffers to avoid stack overflow
@@ -408,17 +406,21 @@ async fn handle_live_mqtt_updates<'a>(
         }
     }
 
-    // Subscribe to topic
-    match client.subscribe_to_topic(MQTT_TOPIC1).await {
-        Ok(_) => log::info!("Subscribed to topic: {}", MQTT_TOPIC1),
-        Err(e) => {
-            log::error!("MQTT subscription error: {:?}", e);
-            return Err("Failed to subscribe to MQTT topic");
-        }
-    }
+    // Construct topic paths using client ID
+    let mut raw_topic = String::<64>::new();
+    core::fmt::write(&mut raw_topic, format_args!("{}/root/raw", MQTT_CLIENT_ID))
+        .map_err(|_| "Failed to format raw topic")?;
 
-    match client.subscribe_to_topic(MQTT_TOPIC2).await {
-        Ok(_) => log::info!("Subscribed to topic: {}", MQTT_TOPIC2),
+    let mut response_topic = String::<64>::new();
+    core::fmt::write(
+        &mut response_topic,
+        format_args!("{}/root/response", MQTT_CLIENT_ID),
+    )
+    .map_err(|_| "Failed to format response topic")?;
+
+    // Subscribe to raw binary data topic
+    match client.subscribe_to_topic(raw_topic.as_str()).await {
+        Ok(_) => log::info!("Subscribed to topic: {}", raw_topic.as_str()),
         Err(e) => {
             log::error!("MQTT subscription error: {:?}", e);
             return Err("Failed to subscribe to MQTT topic");
@@ -447,32 +449,57 @@ async fn handle_live_mqtt_updates<'a>(
             }
             // MQTT message received
             Either3::Third(Ok((topic, payload))) => {
-                log::info!("Received MQTT message on topic: {}", topic);
+                log::info!(
+                    "Received MQTT message on topic: {} ({} bytes)",
+                    topic,
+                    payload.len()
+                );
 
-                match topic {
-                    topic if topic == MQTT_TOPIC1 => {
-                        // Parse payload as UTF-8 text
-                        if let Ok(text) = core::str::from_utf8(payload) {
-                            log::info!("Message: {}", text);
+                if topic == raw_topic.as_str() {
+                    // Handle raw binary display data
+                    log::info!("Processing raw binary display data");
 
-                            // Queue the message for display
-                            queue_text_display(display_channel, text);
-                        } else {
-                            log::error!("Invalid UTF-8 in MQTT payload");
-                        }
+                    // Parse JSON to check if response is required
+                    use serde::Deserialize;
+
+                    #[derive(Deserialize)]
+                    struct RawPayload {
+                        requires_response: bool,
                     }
-                    topic if topic == MQTT_TOPIC2 => {
-                        // Parse payload as UTF-8 text
-                        if let Ok(text) = core::str::from_utf8(payload) {
-                            log::info!("Message: {}", text);
 
-                            // Queue the URL for display as QR code
-                            queue_qr_display(display_channel, text);
+                    let requires_response = if let Ok((parsed, _)) = serde_json_core::from_slice::<RawPayload>(payload) {
+                        parsed.requires_response
+                    } else {
+                        log::warn!("Failed to parse requires_response field, defaulting to false");
+                        false
+                    };
+
+                    // Queue the display data
+                    queue_raw_display(display_channel, payload);
+                    log::info!("Raw display data queued successfully");
+
+                    // Send response only if required
+                    if requires_response {
+                        let response_msg = b"{\"response\":\"success\"}";
+
+                        if let Err(e) = client
+                            .send_message(
+                                response_topic.as_str(),
+                                response_msg,
+                                rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
+                                false,
+                            )
+                            .await
+                        {
+                            log::warn!("Failed to publish response: {:?}", e);
                         } else {
-                            log::error!("Invalid UTF-8 in MQTT payload");
+                            log::info!("Published success response to {}", response_topic.as_str());
                         }
+                    } else {
+                        log::info!("No response required");
                     }
-                    _ => log::error!("Topic not found"),
+                } else {
+                    log::warn!("Received message on unexpected topic: {}", topic);
                 }
             }
             // MQTT receive error

@@ -1,6 +1,6 @@
 //! Display handler task for rate-limited display updates
 
-use crate::spi::SpiV2;
+use crate::{spi::SpiV2, tasks::MatchSliceLengths};
 use display::{Display, EPD417, EPD417_SIZE};
 use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
@@ -12,18 +12,26 @@ use esp_hal::{Async, gpio::Output};
 use esp_storage::FlashStorage;
 use text::{Alignment, FontSize, Text};
 
-const DISPLAY_TEXT_BUFFER_LENGTH: usize = 512;
 /// Size of the display message channel
 pub const DISPLAY_CHANNEL_SIZE: usize = 5;
 const DISPLAY_UPDATE_DELAY_MS: u64 = 200; // Minimum delay between display updates
+const DISPLAY_TEXT_BUFFER_LENGTH: usize = 512;
+const RAW_DISPLAY_BUFFER_SIZE: usize = 15360; // 15KB for raw binary display data
+
+const DISPLAY_WIDTH: u32 = 400;
+const DISPLAY_HEIGHT: u32 = 300;
+
+const DISPLAY_SIZE_IN_BYTES: usize = (DISPLAY_WIDTH * DISPLAY_HEIGHT / 8) as usize;
 
 /// Messages that can be sent to the display task
 #[derive(Debug, Clone, Copy)]
 pub enum DisplayMessage {
-    /// Display text on the screen
+    /// Display text on the screen (via NFC)
     Text,
-    /// Display a QR code from URL
+    /// Display a QR code from URL (via NFC)
     QRCode,
+    /// Display raw binary data (via MQTT)
+    RawBinary,
 }
 
 // Static buffers for display data protected by mutexes
@@ -31,6 +39,8 @@ static DISPLAY_TEXT_BUFFER: Mutex<CriticalSectionRawMutex, [u8; DISPLAY_TEXT_BUF
     Mutex::new([0; DISPLAY_TEXT_BUFFER_LENGTH]);
 static DISPLAY_URL_BUFFER: Mutex<CriticalSectionRawMutex, [u8; DISPLAY_TEXT_BUFFER_LENGTH]> =
     Mutex::new([0; DISPLAY_TEXT_BUFFER_LENGTH]);
+static RAW_DISPLAY_BUFFER: Mutex<CriticalSectionRawMutex, [u8; RAW_DISPLAY_BUFFER_SIZE]> =
+    Mutex::new([0; RAW_DISPLAY_BUFFER_SIZE]);
 
 /// Display handler task that processes display messages from a channel
 /// This allows rate-limiting display updates without blocking data input
@@ -61,12 +71,10 @@ pub async fn task_display_handler(
                 let buf = DISPLAY_TEXT_BUFFER.lock().await;
                 let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
                 match core::str::from_utf8(&buf[..len]) {
-                    Ok(text) if !text.is_empty() => {
-                        match display_text(&mut display, text).await {
-                            Ok(_) => log::info!("Successfully displayed text"),
-                            Err(e) => log::error!("Error displaying text: {:?}", e),
-                        }
-                    }
+                    Ok(text) if !text.is_empty() => match display_text(&mut display, text).await {
+                        Ok(_) => log::info!("Successfully displayed text"),
+                        Err(e) => log::error!("Error displaying text: {:?}", e),
+                    },
                     Ok(_) => {} // Empty text, do nothing
                     Err(_) => {
                         log::error!("Invalid UTF-8 in text buffer");
@@ -77,16 +85,30 @@ pub async fn task_display_handler(
                 let buf = DISPLAY_URL_BUFFER.lock().await;
                 let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
                 match core::str::from_utf8(&buf[..len]) {
-                    Ok(url) if !url.is_empty() => {
-                        match display_qr_code(&mut display, url).await {
-                            Ok(_) => log::info!("Successfully displayed QR code"),
-                            Err(e) => log::error!("Error displaying QR code: {:?}", e),
-                        }
-                    }
+                    Ok(url) if !url.is_empty() => match display_qr_code(&mut display, url).await {
+                        Ok(_) => log::info!("Successfully displayed QR code"),
+                        Err(e) => log::error!("Error displaying QR code: {:?}", e),
+                    },
                     Ok(_) => {} // Empty URL, do nothing
                     Err(_) => {
                         log::error!("Invalid UTF-8 in URL buffer");
                     }
+                }
+            }
+            DisplayMessage::RawBinary => {
+                let buf = RAW_DISPLAY_BUFFER.lock().await;
+
+                // Get the actual data length (find first zero or use full buffer)
+                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+
+                if len > 0 {
+                    log::info!("Processing raw binary data: {} bytes", len);
+                    match display_raw_binary(&mut display, &buf[..len]).await {
+                        Ok(_) => log::info!("Successfully displayed raw binary"),
+                        Err(e) => log::error!("Error displaying raw binary: {:?}", e),
+                    }
+                } else {
+                    log::warn!("Empty raw binary buffer, skipping display");
                 }
             }
         }
@@ -140,6 +162,34 @@ pub fn queue_qr_display(
     }
 }
 
+/// Store raw binary data in the display task's buffer and send message to display it (via MQTT)
+pub fn queue_raw_display(
+    channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
+    data: &[u8],
+) {
+    if let Ok(mut buf) = RAW_DISPLAY_BUFFER.try_lock() {
+        buf.fill(0);
+        let len = core::cmp::min(data.len(), buf.len());
+        buf[..len].copy_from_slice(&data[..len]);
+
+        if data.len() > buf.len() {
+            log::warn!(
+                "Raw display data truncated: {} bytes received, {} bytes buffer",
+                data.len(),
+                buf.len()
+            );
+        }
+    } else {
+        log::warn!("Raw display buffer locked, skipping update");
+        return;
+    }
+
+    // Try to send, drop oldest message if channel is full
+    if channel.try_send(DisplayMessage::RawBinary).is_err() {
+        log::warn!("Display channel full, message may be dropped");
+    }
+}
+
 /// Update the e-ink display with text
 async fn display_text<'a, 'b>(
     display: &'a mut Display<
@@ -153,7 +203,7 @@ async fn display_text<'a, 'b>(
     >,
     text: &'b str,
 ) -> Result<(), &'static str> {
-    log::info!("Updating display");
+    log::info!("Updating display with text");
 
     let mut display_on = display
         .on()
@@ -196,8 +246,6 @@ async fn display_qr_code<'a, 'b>(
     log::info!("Updating display with QR code");
 
     // Calculate the optimal scale that fits within display bounds
-    const DISPLAY_WIDTH: u32 = 400;
-    const DISPLAY_HEIGHT: u32 = 300;
     const MAX_SCALE: u32 = 7;
     const MIN_SCALE: u32 = 1;
 
@@ -256,4 +304,75 @@ async fn display_qr_code<'a, 'b>(
         .map_err(|_| "Failed to turn off display")?;
 
     Ok(())
+}
+
+/// Update the e-ink display with raw binary data from JSON payload
+/// Expected JSON format: {"data_in_bytes": [byte1, byte2, ...], "requires_response": true/false}
+/// Returns whether a response is required
+async fn display_raw_binary<'a>(
+    display: &'a mut Display<
+        'static,
+        SpiV2<'static, Async>,
+        esp_hal::gpio::Input<'static>,
+        Output<'static>,
+        EPD417_SIZE,
+        EPD417,
+        display::OFF,
+    >,
+    json_data: &[u8],
+) -> Result<bool, &'static str> {
+    log::info!("Parsing JSON payload: {} bytes", json_data.len());
+
+    // Parse JSON to extract binary data array and response flag
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct BinaryPayload<'a> {
+        #[serde(borrow)]
+        frame: &'a [u8],
+        requires_response: bool,
+    }
+
+    let parsed: BinaryPayload = serde_json_core::from_slice(json_data)
+        .map_err(|e| {
+            log::error!("JSON parse error: {:?}", e);
+            "Failed to parse JSON payload"
+        })?
+        .0;
+
+    let frame = parsed.frame;
+    let requires_response = parsed.requires_response;
+
+    log::info!(
+        "Extracted binary data: {} bytes, requires_response: {}",
+        frame.len(),
+        requires_response
+    );
+
+    if frame.len() != DISPLAY_SIZE_IN_BYTES {
+        log::error!(
+            "Invalid framebuffer size: expected {} bytes, got {} bytes",
+            DISPLAY_SIZE_IN_BYTES,
+            frame.len()
+        );
+        return Err("Invalid framebuffer size");
+    }
+
+    let mut display_on = display
+        .on()
+        .await
+        .map_err(|_| "Failed to turn on display")?;
+
+    display_on
+        .update_and_save_frame::<FlashStorage>(&mut frame.match_size(0), true)
+        .await
+        .map_err(|_| "Failed to update display")?;
+
+    display_on
+        .off()
+        .await
+        .map_err(|_| "Failed to turn off display")?;
+
+    log::info!("Successfully displayed raw binary data");
+    Ok(requires_response)
 }

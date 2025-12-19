@@ -81,10 +81,10 @@ macro_rules! mk_static {
 pub enum NotificationType {
     /// Wifi credentials
     WifiCredentials,
-    /// Text for displaying
+    /// Text for displaying (via NFC)
     DisplayText,
-    /// Display URL
+    /// Display URL (via NFC)
     DisplayURL,
-    /// Live updates
+    /// Live updates (via MQTT)
     LiveSecureUpdates,
 }

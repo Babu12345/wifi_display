@@ -68,7 +68,7 @@ pub async fn task_nfc(
                         continue 'process;
                     }
 
-                    // Regular text to display
+                    // Regular text to display (via NFC, for low bandwidth scenarios)
                     if let Err(e) = data.to_bytes(&mut storage_data) {
                         log::error!("Serialization error: {e:?}");
                         continue 'process;
