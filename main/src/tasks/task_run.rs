@@ -13,6 +13,7 @@ use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, watch::Receiver};
 use embassy_time::{Duration, Timer};
 use rand_core::CryptoRngCore;
+use serde::Deserialize;
 
 use core::cell::RefCell;
 use esp_hal::peripherals;
@@ -55,6 +56,13 @@ enum DisplayMode {
     QRCode,
     /// Live secure updates via MQTT
     LiveUpdates,
+}
+
+/// JSON payload structure for checking if MQTT response is required
+/// Expected format: {"data_in_bytes": [...], "requires_response": true/false}
+#[derive(Deserialize)]
+struct RawPayload {
+    requires_response: bool,
 }
 
 /// Runner for the main wifi processing task
@@ -459,15 +467,9 @@ async fn handle_live_mqtt_updates<'a>(
                     // Handle raw binary display data
                     log::info!("Processing raw binary display data");
 
-                    // Parse JSON to check if response is required
-                    use serde::Deserialize;
-
-                    #[derive(Deserialize)]
-                    struct RawPayload {
-                        requires_response: bool,
-                    }
-
-                    let requires_response = if let Ok((parsed, _)) = serde_json_core::from_slice::<RawPayload>(payload) {
+                    let requires_response = if let Ok((parsed, _)) =
+                        serde_json_core::from_slice::<RawPayload>(payload)
+                    {
                         parsed.requires_response
                     } else {
                         log::warn!("Failed to parse requires_response field, defaulting to false");

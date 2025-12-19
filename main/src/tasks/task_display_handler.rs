@@ -10,6 +10,7 @@ use embassy_sync::{
 use embassy_time::{Duration, Timer};
 use esp_hal::{Async, gpio::Output};
 use esp_storage::FlashStorage;
+use serde::Deserialize;
 use text::{Alignment, FontSize, Text};
 
 /// Size of the display message channel
@@ -32,6 +33,15 @@ pub enum DisplayMessage {
     QRCode,
     /// Display raw binary data (via MQTT)
     RawBinary,
+}
+
+/// JSON payload structure for raw binary display data
+/// Expected format: {"data_in_bytes": [byte1, byte2, ...], "requires_response": true/false}
+#[derive(Deserialize)]
+struct BinaryPayload<'a> {
+    #[serde(borrow)]
+    frame: &'a [u8],
+    requires_response: bool,
 }
 
 // Static buffers for display data protected by mutexes
@@ -320,19 +330,10 @@ async fn display_raw_binary<'a>(
         display::OFF,
     >,
     json_data: &[u8],
-) -> Result<bool, &'static str> {
+) -> Result<(), &'static str> {
     log::info!("Parsing JSON payload: {} bytes", json_data.len());
 
     // Parse JSON to extract binary data array and response flag
-    use serde::Deserialize;
-
-    #[derive(Deserialize)]
-    struct BinaryPayload<'a> {
-        #[serde(borrow)]
-        frame: &'a [u8],
-        requires_response: bool,
-    }
-
     let parsed: BinaryPayload = serde_json_core::from_slice(json_data)
         .map_err(|e| {
             log::error!("JSON parse error: {:?}", e);
@@ -374,5 +375,5 @@ async fn display_raw_binary<'a>(
         .map_err(|_| "Failed to turn off display")?;
 
     log::info!("Successfully displayed raw binary data");
-    Ok(requires_response)
+    Ok(())
 }
