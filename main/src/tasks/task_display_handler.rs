@@ -44,11 +44,11 @@ struct BinaryPayload<'a> {
     requires_response: bool,
 }
 
-// Static buffers for display data protected by mutexes
-// OPTIMIZATION: Text and URL share one buffer since they're never used simultaneously
-static DISPLAY_TEXT_URL_BUFFER: Mutex<CriticalSectionRawMutex, [u8; DISPLAY_TEXT_BUFFER_LENGTH]> =
-    Mutex::new([0; DISPLAY_TEXT_BUFFER_LENGTH]);
-static RAW_DISPLAY_BUFFER: Mutex<CriticalSectionRawMutex, [u8; RAW_DISPLAY_BUFFER_SIZE]> =
+// Static buffer for all display data protected by mutex
+// OPTIMIZATION: Single unified buffer for all display types since messages are processed sequentially
+// - Text/URL use first DISPLAY_TEXT_BUFFER_LENGTH bytes (512)
+// - Raw binary uses full RAW_DISPLAY_BUFFER_SIZE bytes (15,360)
+static UNIFIED_DISPLAY_BUFFER: Mutex<CriticalSectionRawMutex, [u8; RAW_DISPLAY_BUFFER_SIZE]> =
     Mutex::new([0; RAW_DISPLAY_BUFFER_SIZE]);
 
 /// Display handler task that processes display messages from a channel
@@ -77,9 +77,11 @@ pub async fn task_display_handler(
         // Process the message
         match message {
             DisplayMessage::Text => {
-                let buf = DISPLAY_TEXT_URL_BUFFER.lock().await;
-                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-                match core::str::from_utf8(&buf[..len]) {
+                let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
+                // Only use first DISPLAY_TEXT_BUFFER_LENGTH bytes for text
+                let text_slice = &buf[..DISPLAY_TEXT_BUFFER_LENGTH];
+                let len = text_slice.iter().position(|&b| b == 0).unwrap_or(text_slice.len());
+                match core::str::from_utf8(&text_slice[..len]) {
                     Ok(text) if !text.is_empty() => match display_text(&mut display, text).await {
                         Ok(_) => log::info!("Successfully displayed text"),
                         Err(e) => log::error!("Error displaying text: {:?}", e),
@@ -91,9 +93,11 @@ pub async fn task_display_handler(
                 }
             }
             DisplayMessage::QRCode => {
-                let buf = DISPLAY_TEXT_URL_BUFFER.lock().await;
-                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-                match core::str::from_utf8(&buf[..len]) {
+                let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
+                // Only use first DISPLAY_TEXT_BUFFER_LENGTH bytes for URL
+                let url_slice = &buf[..DISPLAY_TEXT_BUFFER_LENGTH];
+                let len = url_slice.iter().position(|&b| b == 0).unwrap_or(url_slice.len());
+                match core::str::from_utf8(&url_slice[..len]) {
                     Ok(url) if !url.is_empty() => match display_qr_code(&mut display, url).await {
                         Ok(_) => log::info!("Successfully displayed QR code"),
                         Err(e) => log::error!("Error displaying QR code: {:?}", e),
@@ -105,7 +109,7 @@ pub async fn task_display_handler(
                 }
             }
             DisplayMessage::RawBinary => {
-                let buf = RAW_DISPLAY_BUFFER.lock().await;
+                let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
 
                 // Get the actual data length (find first zero or use full buffer)
                 let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
@@ -134,13 +138,14 @@ pub fn queue_text_display(
     channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     text: &str,
 ) {
-    if let Ok(mut buf) = DISPLAY_TEXT_URL_BUFFER.try_lock() {
-        buf.fill(0);
+    if let Ok(mut buf) = UNIFIED_DISPLAY_BUFFER.try_lock() {
+        // Only clear and use first DISPLAY_TEXT_BUFFER_LENGTH bytes for text
+        buf[..DISPLAY_TEXT_BUFFER_LENGTH].fill(0);
         let text_bytes = text.as_bytes();
-        let len = core::cmp::min(text_bytes.len(), buf.len());
+        let len = core::cmp::min(text_bytes.len(), DISPLAY_TEXT_BUFFER_LENGTH);
         buf[..len].copy_from_slice(&text_bytes[..len]);
     } else {
-        log::warn!("Display text buffer locked, skipping update");
+        log::warn!("Display buffer locked, skipping update");
         return;
     }
 
@@ -155,13 +160,14 @@ pub fn queue_qr_display(
     channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     url: &str,
 ) {
-    if let Ok(mut buf) = DISPLAY_TEXT_URL_BUFFER.try_lock() {
-        buf.fill(0);
+    if let Ok(mut buf) = UNIFIED_DISPLAY_BUFFER.try_lock() {
+        // Only clear and use first DISPLAY_TEXT_BUFFER_LENGTH bytes for URL
+        buf[..DISPLAY_TEXT_BUFFER_LENGTH].fill(0);
         let url_bytes = url.as_bytes();
-        let len = core::cmp::min(url_bytes.len(), buf.len());
+        let len = core::cmp::min(url_bytes.len(), DISPLAY_TEXT_BUFFER_LENGTH);
         buf[..len].copy_from_slice(&url_bytes[..len]);
     } else {
-        log::warn!("Display URL buffer locked, skipping update");
+        log::warn!("Display buffer locked, skipping update");
         return;
     }
 
@@ -176,7 +182,8 @@ pub fn queue_raw_display(
     channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     data: &[u8],
 ) {
-    if let Ok(mut buf) = RAW_DISPLAY_BUFFER.try_lock() {
+    if let Ok(mut buf) = UNIFIED_DISPLAY_BUFFER.try_lock() {
+        // Use full buffer for raw binary data
         buf.fill(0);
         let len = core::cmp::min(data.len(), buf.len());
         buf[..len].copy_from_slice(&data[..len]);
@@ -189,7 +196,7 @@ pub fn queue_raw_display(
             );
         }
     } else {
-        log::warn!("Raw display buffer locked, skipping update");
+        log::warn!("Display buffer locked, skipping update");
         return;
     }
 
