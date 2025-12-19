@@ -34,7 +34,7 @@ const DISPLAY_TEXT_BUFFER_LENGTH: usize = 512;
 const MQTT_BROKER_CSTR: &CStr = c"avbh2adibwzla-ats.iot.us-east-2.amazonaws.com";
 const MQTT_PORT: u16 = 8883; // TLS port
 // Client ID: Update this 6-character alphanumeric code for each board
-const MQTT_CLIENT_ID: &str = "A3F2C1";
+const MQTT_CLIENT_ID: &str = "client1";
 const MQTT_TIMEOUT_SECS: u16 = 120;
 // MQTT buffer size: 16KB to support 15KB raw binary display data + JSON overhead
 const MQTT_BUFFER_SIZE: usize = 16384;
@@ -43,10 +43,14 @@ const MQTT_BUFFER_SIZE: usize = 16384;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 
 // Static buffers for MQTT protected by mutexes to prevent concurrent access
-static MQTT_TCP_RX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> = Mutex::new([0u8; MQTT_BUFFER_SIZE]);
-static MQTT_TCP_TX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> = Mutex::new([0u8; MQTT_BUFFER_SIZE]);
-static MQTT_RECV_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> = Mutex::new([0u8; MQTT_BUFFER_SIZE]);
-static MQTT_WRITE_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> = Mutex::new([0u8; MQTT_BUFFER_SIZE]);
+static MQTT_TCP_RX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
+    Mutex::new([0u8; MQTT_BUFFER_SIZE]);
+static MQTT_TCP_TX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
+    Mutex::new([0u8; MQTT_BUFFER_SIZE]);
+static MQTT_RECV_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
+    Mutex::new([0u8; MQTT_BUFFER_SIZE]);
+static MQTT_WRITE_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
+    Mutex::new([0u8; MQTT_BUFFER_SIZE]);
 
 /// Display mode for the main task
 #[derive(Debug, Clone, Copy, PartialEq)]
