@@ -445,6 +445,11 @@ mod tests {
         const DISPLAY_SIZE: usize = 15_000;
         let mut original = [0u8; DISPLAY_SIZE];
 
+        // IMPORTANT: Buffer size requirements for in-place decoding:
+        // - Minimum buffer size must be >= DISPLAY_SIZE (15,000 bytes)
+        // - The JSON payload is much smaller (~3KB) but expands to 15KB during decoding
+        // - Recommended: 15,360 bytes (15KB + 360 byte safety margin)
+
         // Create realistic display pattern:
         // - White background (0xFF = all pixels white)
         // - Some text/graphics regions (0x00 = all pixels black)

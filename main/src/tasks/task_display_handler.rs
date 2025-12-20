@@ -16,12 +16,22 @@ use text::{Alignment, FontSize, Text};
 pub const DISPLAY_CHANNEL_SIZE: usize = 5;
 const DISPLAY_UPDATE_DELAY_MS: u64 = 200; // Minimum delay between display updates
 const DISPLAY_TEXT_BUFFER_LENGTH: usize = 512;
-const RAW_DISPLAY_BUFFER_SIZE: usize = 15360; // 15KB for raw binary display data
 
 const DISPLAY_WIDTH: u32 = 400;
 const DISPLAY_HEIGHT: u32 = 300;
 
-const DISPLAY_SIZE_IN_BYTES: usize = (DISPLAY_WIDTH * DISPLAY_HEIGHT / 8) as usize;
+const DISPLAY_SIZE_IN_BYTES: usize = (DISPLAY_WIDTH * DISPLAY_HEIGHT / 8) as usize; // 15,000 bytes
+
+// Buffer size for raw binary display data
+// Must be >= DISPLAY_SIZE_IN_BYTES to hold decompressed frame after in-place decoding
+// The JSON payload (~3KB compressed) expands to DISPLAY_SIZE_IN_BYTES (15KB) during decoding
+const RAW_DISPLAY_BUFFER_SIZE: usize = DISPLAY_SIZE_IN_BYTES + 360; // 15KB + 360 bytes safety margin
+
+// Compile-time assertion: Buffer must be large enough for decompressed display data
+const _: () = assert!(
+    RAW_DISPLAY_BUFFER_SIZE >= DISPLAY_SIZE_IN_BYTES,
+    "RAW_DISPLAY_BUFFER_SIZE must be >= DISPLAY_SIZE_IN_BYTES for in-place decoding"
+);
 
 /// Messages that can be sent to the display task
 #[derive(Debug, Clone, Copy)]
@@ -33,7 +43,6 @@ pub enum DisplayMessage {
     /// Display raw binary data (via MQTT)
     RawBinary,
 }
-
 
 // Static buffer for all display data protected by mutex
 // OPTIMIZATION: Single unified buffer for all display types since messages are processed sequentially
