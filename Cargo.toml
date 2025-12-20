@@ -2,7 +2,7 @@
 [workspace]
 exclude = ["main"]
 resolver = "2"
-members = []
+members = ["decoding"]
 
 
 [workspace.package]

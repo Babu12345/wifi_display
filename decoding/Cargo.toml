@@ -1,0 +1,12 @@
+[package]
+name = "decoding"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64ct = { version = "1.6", default-features = false, features = ["alloc"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde-json-core = { version = "0.6.0", default-features = false }

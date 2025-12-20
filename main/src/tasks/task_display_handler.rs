@@ -10,7 +10,6 @@ use embassy_sync::{
 use embassy_time::{Duration, Timer};
 use esp_hal::{Async, gpio::Output};
 use esp_storage::FlashStorage;
-use serde::Deserialize;
 use text::{Alignment, FontSize, Text};
 
 /// Size of the display message channel
@@ -35,15 +34,6 @@ pub enum DisplayMessage {
     RawBinary,
 }
 
-/// JSON payload structure for raw binary display data
-/// Expected format: {"frame": "base64_encoded_string", "requires_response": true/false}
-#[derive(Deserialize)]
-pub struct BinaryPayload<'a> {
-    #[serde(borrow)]
-    frame: &'a str,
-    /// Message to the client on whether we require a response
-    pub requires_response: bool,
-}
 
 // Static buffer for all display data protected by mutex
 // OPTIMIZATION: Single unified buffer for all display types since messages are processed sequentially
@@ -116,14 +106,14 @@ pub async fn task_display_handler(
                 }
             }
             DisplayMessage::RawBinary => {
-                let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
+                let mut buf = UNIFIED_DISPLAY_BUFFER.lock().await;
 
                 // Get the actual data length (find first zero or use full buffer)
                 let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
 
                 if len > 0 {
                     log::info!("Processing raw binary data: {} bytes", len);
-                    match display_raw_binary(&mut display, &buf[..len]).await {
+                    match display_raw_binary(&mut display, &mut buf[..len]).await {
                         Ok(_) => log::info!("Successfully displayed raw binary"),
                         Err(e) => log::error!("Error displaying raw binary: {:?}", e),
                     }
@@ -313,8 +303,7 @@ async fn display_qr_code<'a, 'b>(
         .await
         .map_err(|_| "Failed to turn on display")?;
 
-    let mut frame = qr
-        .to_frame::<DISPLAY_WIDTH, DISPLAY_HEIGHT, { (DISPLAY_WIDTH * DISPLAY_HEIGHT / 8) as usize }>();
+    let mut frame = qr.to_frame::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>();
 
     display_on
         .update_and_save_frame::<FlashStorage>(&mut frame, true)
@@ -330,8 +319,10 @@ async fn display_qr_code<'a, 'b>(
 }
 
 /// Update the e-ink display with raw binary data from JSON payload
-/// Expected JSON format: {"data_in_bytes": [byte1, byte2, ...], "requires_response": true/false}
-/// Returns whether a response is required
+/// Expected JSON format: {"frame": "base64_encoded_string", "requires_response": true/false}
+/// The base64 data is decoded in-place into the json_data buffer without additional allocations
+/// Strategy: Move base64 string to end of buffer, then decode to beginning (avoids overlap)
+/// The data is RLE compressed: [count, byte, count, byte, ...]
 async fn display_raw_binary<'a>(
     display: &'a mut Display<
         'static,
@@ -342,35 +333,34 @@ async fn display_raw_binary<'a>(
         EPD417,
         display::OFF,
     >,
-    json_data: &[u8],
+    json_data: &mut [u8],
 ) -> Result<(), &'static str> {
     log::info!("Parsing JSON payload: {} bytes", json_data.len());
 
-    // Parse JSON to extract binary data array and response flag
-    let parsed: BinaryPayload = serde_json_core::from_slice(json_data)
+    // Use the decoding crate to handle JSON parsing, base64 decoding, and RLE decompression
+    let (decompressed_len, requires_response) = decoding::decode_json_rle_base64(json_data)
         .map_err(|e| {
-            log::error!("JSON parse error: {:?}", e);
-            "Failed to parse JSON payload"
-        })?
-        .0;
-
-    let frame = parsed.frame;
-    let requires_response = parsed.requires_response;
+            log::error!("Decoding error: {}", e);
+            e
+        })?;
 
     log::info!(
-        "Extracted binary data: {} bytes, requires_response: {}",
-        frame.len(),
+        "Decompressed {} bytes, requires_response: {}",
+        decompressed_len,
         requires_response
     );
 
-    if frame.len() != DISPLAY_SIZE_IN_BYTES {
+    if decompressed_len != DISPLAY_SIZE_IN_BYTES {
         log::error!(
             "Invalid framebuffer size: expected {} bytes, got {} bytes",
             DISPLAY_SIZE_IN_BYTES,
-            frame.len()
+            decompressed_len
         );
         return Err("Invalid framebuffer size");
     }
+
+    // Use the decompressed data from json_data buffer for display update
+    let frame_data = &mut json_data[..decompressed_len];
 
     let mut display_on = display
         .on()
@@ -378,7 +368,7 @@ async fn display_raw_binary<'a>(
         .map_err(|_| "Failed to turn on display")?;
 
     display_on
-        .update_and_save_frame::<FlashStorage>(&mut frame.as_bytes().match_size(0x00), true)
+        .update_and_save_frame::<FlashStorage>(&mut frame_data.match_size(0x00), true)
         .await
         .map_err(|_| "Failed to update display")?;
 

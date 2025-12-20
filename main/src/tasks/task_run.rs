@@ -5,10 +5,10 @@ use core::str::FromStr;
 
 use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::tasks::task_display_handler::{
-    BinaryPayload, DISPLAY_CHANNEL_SIZE, DisplayMessage, queue_qr_display, queue_raw_display,
-    queue_text_display,
+    DISPLAY_CHANNEL_SIZE, DisplayMessage, queue_qr_display, queue_raw_display, queue_text_display,
 };
 use crate::{AsyncStack, NotificationType};
+use decoding::BinaryPayload;
 use embassy_futures::select::{Either3, select3};
 use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, watch::Receiver};
