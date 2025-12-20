@@ -37,7 +37,7 @@ const MQTT_PORT: u16 = 8883; // TLS port
 const MQTT_CLIENT_ID: &str = "client1";
 const MQTT_TIMEOUT_SECS: u16 = 120;
 // MQTT buffer size: 16KB to support 15KB raw binary display data + JSON overhead
-const MQTT_BUFFER_SIZE: usize = 16384;
+const MQTT_BUFFER_SIZE: usize = 17384;
 
 // Static buffers for MQTT to avoid stack overflow
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
@@ -391,7 +391,7 @@ async fn handle_live_mqtt_updates<'a>(
     let mut recv_buffer = [0u8; MQTT_BUFFER_SIZE];
     let mut write_buffer = [0u8; MQTT_BUFFER_SIZE];
 
-    let mut client = MqttClient::<_, 5, _>::new(
+    let mut client = MqttClient::<_, 3, _>::new(
         session,
         &mut write_buffer,
         MQTT_BUFFER_SIZE,
