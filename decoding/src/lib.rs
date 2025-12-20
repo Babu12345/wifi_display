@@ -436,4 +436,90 @@ mod tests {
         assert_eq!(parsed.frame, "A/8CAA==");
         assert_eq!(parsed.requires_response, true);
     }
+
+    #[test]
+    fn test_e2e_realistic_15kb_display_data() {
+        // Simulate realistic 400x300 e-ink display data (15,000 bytes)
+        // Display size: 400 pixels wide × 300 pixels tall = 120,000 pixels
+        // At 1 bit per pixel: 120,000 / 8 = 15,000 bytes
+        const DISPLAY_SIZE: usize = 15_000;
+        let mut original = [0u8; DISPLAY_SIZE];
+
+        // Create realistic display pattern:
+        // - White background (0xFF = all pixels white)
+        // - Some text/graphics regions (0x00 = all pixels black)
+        // - Grayscale patterns (mixed bytes)
+
+        // Fill with white background
+        original.fill(0xFF);
+
+        // Add some "text" regions (horizontal bars of black pixels)
+        for row in [10, 30, 50, 70, 90, 110, 130, 150, 170, 190] {
+            let start = row * 50; // 50 bytes per simulated row
+            let end = start + 40; // 40 bytes of black
+            if end < DISPLAY_SIZE {
+                original[start..end].fill(0x00);
+            }
+        }
+
+        // Add some grayscale patterns (simulating anti-aliased text or images)
+        for i in (5000..5500).step_by(2) {
+            if i < DISPLAY_SIZE {
+                original[i] = 0xAA; // 10101010 pattern
+            }
+        }
+        for i in (10000..10500).step_by(2) {
+            if i < DISPLAY_SIZE {
+                original[i] = 0x55; // 01010101 pattern
+            }
+        }
+
+        std::println!("Original display data size: {} bytes", original.len());
+
+        // Step 1: RLE compress the data
+        let mut rle_compressed = vec![0u8; DISPLAY_SIZE * 2]; // Worst case: 2x size if no compression
+        let rle_len = rle_encode(&original, &mut rle_compressed);
+        rle_compressed.truncate(rle_len);
+
+        std::println!("RLE compressed size: {} bytes ({:.1}% of original)",
+            rle_len, (rle_len as f64 / original.len() as f64) * 100.0);
+
+        // Verify compression achieved <7KB target
+        assert!(rle_len < 7000, "RLE compression should reduce 15KB to <7KB, got {} bytes", rle_len);
+
+        // Step 2: Base64 encode the compressed data
+        let base64_max_size = ((rle_len + 2) / 3) * 4; // Base64 expands by ~33%
+        let mut base64_buf = vec![0u8; base64_max_size + 100];
+        let b64_str = base64_encode(&rle_compressed[..rle_len], &mut base64_buf)
+            .expect("Base64 encoding should succeed");
+
+        std::println!("Base64 encoded size: {} bytes", b64_str.len());
+
+        // Step 3: Create JSON payload (BinaryPayload format)
+        let json_string = std::format!(
+            r#"{{"frame":"{}","requires_response":true}}"#,
+            b64_str
+        );
+        std::println!("JSON payload size: {} bytes", json_string.len());
+
+        // Allocate buffer with extra space for in-place decoding
+        let mut json_bytes = vec![0u8; json_string.len() + DISPLAY_SIZE + 1000];
+        json_bytes[..json_string.len()].copy_from_slice(json_string.as_bytes());
+
+        // Step 4: Decode using the full pipeline (simulates real-world usage)
+        let (decompressed_len, requires_response) = decode_json_rle_base64(&mut json_bytes)
+            .expect("Decoding should succeed");
+
+        std::println!("Decompressed size: {} bytes", decompressed_len);
+
+        // Step 5: Verify results
+        assert_eq!(decompressed_len, DISPLAY_SIZE,
+            "Decompressed data should be {} bytes", DISPLAY_SIZE);
+        assert_eq!(requires_response, true, "requires_response should be true");
+        assert_eq!(&json_bytes[..decompressed_len], &original[..],
+            "Decompressed data should match original exactly");
+
+        std::println!("✓ E2E test passed: 15KB → {}KB (compressed) → 15KB (decompressed)",
+            rle_len / 1000);
+    }
 }
