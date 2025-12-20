@@ -6,8 +6,33 @@
 use base64ct::{Base64, Encoding};
 use serde::Deserialize;
 
+/// Subsampling factor for image downsampling/upsampling
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum SubsamplingFactor {
+    /// No subsampling (full resolution)
+    #[serde(rename = "1")]
+    None,
+    /// 2x2 subsampling (quarter resolution)
+    #[serde(rename = "2")]
+    Two,
+    /// 4x4 subsampling (1/16 resolution)
+    #[serde(rename = "4")]
+    Four,
+}
+
+impl SubsamplingFactor {
+    /// Get the numeric factor value
+    pub fn value(&self) -> u32 {
+        match self {
+            SubsamplingFactor::None => 1,
+            SubsamplingFactor::Two => 2,
+            SubsamplingFactor::Four => 4,
+        }
+    }
+}
+
 /// JSON payload structure for raw binary display data
-/// Expected format: {"frame": "base64_encoded_string", "requires_response": true/false}
+/// Expected format: {"frame": "base64_encoded_string", "subsample": "1"|"2"|"4", "requires_response": true/false}
 /// The frame data is base64-encoded RLE compressed data
 /// RLE format: [count, byte, count, byte, ...] where count is u8 (1-255)
 #[derive(Deserialize)]
@@ -15,8 +40,17 @@ pub struct BinaryPayload<'a> {
     #[serde(borrow)]
     /// Base64-encoded RLE compressed frame data
     pub frame: &'a str,
+    /// Subsampling factor (1=none, 2=half, 4=quarter)
+    #[serde(default)]
+    pub subsample: Option<SubsamplingFactor>,
     /// Whether the client requires a response
     pub requires_response: bool,
+}
+
+impl Default for SubsamplingFactor {
+    fn default() -> Self {
+        SubsamplingFactor::None
+    }
 }
 
 /// RLE encoder for binary data
@@ -143,12 +177,92 @@ pub fn base64_encode<'a>(
         .map_err(|_| "Failed to encode base64 data")
 }
 
-/// Decode JSON payload containing base64-encoded RLE data
+/// Downsample image data by a given factor
+///
+/// # Arguments
+/// * `input` - Input image data
+/// * `width` - Width of input image in bytes
+/// * `height` - Height of input image in pixels
+/// * `factor` - Subsampling factor (2 or 4)
+/// * `output` - Output buffer for downsampled data
+///
+/// # Returns
+/// Number of bytes written to output
+pub fn downsample_image(
+    input: &[u8],
+    width: usize,
+    height: usize,
+    factor: u32,
+    output: &mut [u8],
+) -> usize {
+    let factor = factor as usize;
+    let out_width = width / factor;
+    let out_height = height / factor;
+
+    let mut out_pos = 0;
+    for out_y in 0..out_height {
+        for out_x in 0..out_width {
+            // Sample from the center of the downsampled block
+            let in_y = out_y * factor;
+            let in_x = out_x * factor;
+            let in_pos = in_y * width + in_x;
+
+            if in_pos < input.len() {
+                output[out_pos] = input[in_pos];
+                out_pos += 1;
+            }
+        }
+    }
+    out_pos
+}
+
+/// Upsample image data by a given factor using nearest-neighbor interpolation
+/// Operates in-place from end to beginning to avoid overwriting source data
+///
+/// # Arguments
+/// * `buffer` - Buffer containing downsampled data at the beginning; will be overwritten with upsampled data
+/// * `downsampled_len` - Length of the downsampled data
+/// * `width` - Target width in bytes
+/// * `height` - Target height in pixels
+/// * `factor` - Upsampling factor (2 or 4)
+///
+/// # Returns
+/// Number of bytes written (should equal width * height)
+pub fn upsample_image_inplace(
+    buffer: &mut [u8],
+    downsampled_len: usize,
+    width: usize,
+    height: usize,
+    factor: u32,
+) -> usize {
+    let factor = factor as usize;
+    let src_width = width / factor;
+    let _src_height = height / factor;
+
+    // Work backwards to avoid overwriting source data
+    for y in (0..height).rev() {
+        for x in (0..width).rev() {
+            let src_y = y / factor;
+            let src_x = x / factor;
+            let src_pos = src_y * src_width + src_x;
+            let dst_pos = y * width + x;
+
+            if src_pos < downsampled_len && dst_pos < buffer.len() {
+                buffer[dst_pos] = buffer[src_pos];
+            }
+        }
+    }
+
+    width * height
+}
+
+/// Decode JSON payload containing base64-encoded RLE data with optional subsampling
 ///
 /// This function performs the complete decoding pipeline:
-/// 1. Parse JSON to extract base64 string
+/// 1. Parse JSON to extract base64 string and subsampling factor
 /// 2. Decode base64 to RLE compressed data
-/// 3. Decompress RLE data to final binary
+/// 3. Decompress RLE data to binary
+/// 4. Upsample if subsampling was used
 ///
 /// All operations are done in-place within the provided buffer.
 ///
@@ -160,9 +274,9 @@ pub fn base64_encode<'a>(
 ///
 /// # Example
 /// ```no_run
-/// let mut buffer = b"{\"frame\":\"...\",\"requires_response\":true}".to_vec();
+/// let mut buffer = b"{\"frame\":\"...\",\"subsample\":\"2\",\"requires_response\":true}".to_vec();
 /// let (len, requires_response) = decoding::decode_json_rle_base64(&mut buffer)?;
-/// // buffer[..len] now contains the decompressed frame data
+/// // buffer[..len] now contains the decompressed and upsampled frame data
 /// # Ok::<(), &str>(())
 /// ```
 pub fn decode_json_rle_base64(json_data: &mut [u8]) -> Result<(usize, bool), &'static str> {
@@ -172,8 +286,8 @@ pub fn decode_json_rle_base64(json_data: &mut [u8]) -> Result<(usize, bool), &'s
         .position(|&b| b == 0)
         .unwrap_or(json_data.len());
 
-    // Parse JSON to extract base64 string position and response flag
-    let (base64_start, base64_len, requires_response) = {
+    // Parse JSON to extract base64 string position, subsampling factor, and response flag
+    let (base64_start, base64_len, subsample_factor, requires_response) = {
         let json_slice = &json_data[..json_end];
         let parsed: BinaryPayload = serde_json_core::from_slice(json_slice)
             .map_err(|_| "Failed to parse JSON payload")?
@@ -184,7 +298,9 @@ pub fn decode_json_rle_base64(json_data: &mut [u8]) -> Result<(usize, bool), &'s
         let json_ptr = json_data.as_ptr();
         let offset = unsafe { base64_ptr.offset_from(json_ptr) } as usize;
 
-        (offset, parsed.frame.len(), parsed.requires_response)
+        let subsample = parsed.subsample.unwrap_or(SubsamplingFactor::None);
+
+        (offset, parsed.frame.len(), subsample, parsed.requires_response)
     };
 
     // Decode base64 in-place: move base64 string to end, then decode to beginning
@@ -208,7 +324,25 @@ pub fn decode_json_rle_base64(json_data: &mut [u8]) -> Result<(usize, bool), &'s
     // RLE decode in-place: read from end, write to beginning
     let decompressed_len = rle_decode_inplace(json_data, decoded_len);
 
-    Ok((decompressed_len, requires_response))
+    // Upsample if needed
+    let final_len = if subsample_factor != SubsamplingFactor::None {
+        // For 400x300 display: width = 50 bytes (400 pixels / 8), height = 300 pixels
+        // These constants should match the display size
+        const DISPLAY_WIDTH_BYTES: usize = 50;  // 400 pixels / 8 bits
+        const DISPLAY_HEIGHT: usize = 300;
+
+        upsample_image_inplace(
+            json_data,
+            decompressed_len,
+            DISPLAY_WIDTH_BYTES,
+            DISPLAY_HEIGHT,
+            subsample_factor.value(),
+        )
+    } else {
+        decompressed_len
+    };
+
+    Ok((final_len, requires_response))
 }
 
 #[cfg(test)]
@@ -526,5 +660,359 @@ mod tests {
 
         std::println!("✓ E2E test passed: 15KB → {}KB (compressed) → 15KB (decompressed)",
             rle_len / 1000);
+    }
+
+    #[test]
+    fn test_compression_realistic_text_document() {
+        // Test realistic text document with typical text density (~30% coverage)
+        const DISPLAY_SIZE: usize = 15_000;
+        let mut original = [0u8; DISPLAY_SIZE];
+
+        // White background
+        original.fill(0xFF);
+
+        // Add realistic text coverage - alternating text/whitespace
+        // Simulate 30 lines of text with realistic character patterns
+        for line in 0..30 {
+            let line_start = line * 500; // ~50 bytes per line
+            for char_block in 0..8 {
+                let start = line_start + char_block * 60;
+                let end = start + 35; // ~35 bytes of text per character block
+                if end < DISPLAY_SIZE {
+                    // Varied patterns for different characters
+                    for i in start..end {
+                        original[i] = if (i - start) % 7 < 4 { 0x00 } else { 0xFF };
+                    }
+                }
+            }
+        }
+
+        let mut rle_compressed = vec![0u8; DISPLAY_SIZE * 2];
+        let rle_len = rle_encode(&original, &mut rle_compressed);
+
+        let compression_ratio = (rle_len as f64 / DISPLAY_SIZE as f64) * 100.0;
+        std::println!("Text document compression: {:.1}% ({} bytes)", compression_ratio, rle_len);
+
+        // Text documents should compress to 30-50% with RLE
+        assert!(rle_len < (DISPLAY_SIZE as f64 * 0.6) as usize,
+            "Text should compress to <60%, got {:.1}%", compression_ratio);
+    }
+
+    #[test]
+    fn test_compression_worst_case_photo() {
+        // Worst case: photo/image with lots of dithering (checkerboard-like patterns)
+        const DISPLAY_SIZE: usize = 15_000;
+        let mut original = [0u8; DISPLAY_SIZE];
+
+        // Simulate dithered image - alternating patterns (worst case for RLE)
+        for i in 0..DISPLAY_SIZE {
+            // Create pseudo-random dithering pattern
+            original[i] = match i % 7 {
+                0 => 0xFF,
+                1 => 0xAA,
+                2 => 0x55,
+                3 => 0x00,
+                4 => 0xCC,
+                5 => 0x33,
+                _ => 0x0F,
+            };
+        }
+
+        let mut rle_compressed = vec![0u8; DISPLAY_SIZE * 2];
+        let rle_len = rle_encode(&original, &mut rle_compressed);
+
+        let compression_ratio = (rle_len as f64 / DISPLAY_SIZE as f64) * 100.0;
+        std::println!("Dithered image (worst case) compression: {:.1}% ({} bytes)",
+            compression_ratio, rle_len);
+
+        // Dithered images might not compress well, could even expand to ~200%
+        // This is expected for RLE on highly varied data
+        std::println!("⚠️  Note: RLE is not suitable for dithered images");
+    }
+
+    #[test]
+    fn test_compression_qr_code() {
+        // QR code: lots of small blocks with some repetition
+        const DISPLAY_SIZE: usize = 15_000;
+        let mut original = [0u8; DISPLAY_SIZE];
+
+        // White background
+        original.fill(0xFF);
+
+        // Simulate QR code pattern (200x200 pixels centered)
+        // QR codes have ~50% black/white ratio with blocks
+        let qr_start_row = 50; // Center vertically
+        let qr_rows = 25; // 200 pixels / 8 bits
+
+        for row in 0..qr_rows {
+            let row_start = (qr_start_row + row) * 50;
+            // Simulate QR code blocks (3x3 pixel blocks)
+            for block in 0..20 {
+                let block_start = row_start + 5 + block * 2;
+                let is_black_block = (row + block) % 3 != 0;
+                if block_start + 1 < DISPLAY_SIZE {
+                    original[block_start] = if is_black_block { 0x00 } else { 0xFF };
+                    original[block_start + 1] = if is_black_block { 0x00 } else { 0xFF };
+                }
+            }
+        }
+
+        let mut rle_compressed = vec![0u8; DISPLAY_SIZE * 2];
+        let rle_len = rle_encode(&original, &mut rle_compressed);
+
+        let compression_ratio = (rle_len as f64 / DISPLAY_SIZE as f64) * 100.0;
+        std::println!("QR code compression: {:.1}% ({} bytes)", compression_ratio, rle_len);
+
+        // QR codes should compress reasonably well (20-40%)
+        assert!(rle_len < (DISPLAY_SIZE as f64 * 0.5) as usize,
+            "QR code should compress to <50%, got {:.1}%", compression_ratio);
+    }
+
+    #[test]
+    fn test_compression_simple_graphics() {
+        // Simple graphics: charts, diagrams (lots of solid regions)
+        const DISPLAY_SIZE: usize = 15_000;
+        let mut original = [0u8; DISPLAY_SIZE];
+
+        // White background
+        original.fill(0xFF);
+
+        // Add some solid bars (like a bar chart)
+        for bar in 0..10 {
+            let bar_start = 1000 + bar * 1200;
+            let bar_height = 200 + bar * 50;
+            for i in bar_start..bar_start + bar_height {
+                if i < DISPLAY_SIZE {
+                    original[i] = 0x00;
+                }
+            }
+        }
+
+        let mut rle_compressed = vec![0u8; DISPLAY_SIZE * 2];
+        let rle_len = rle_encode(&original, &mut rle_compressed);
+
+        let compression_ratio = (rle_len as f64 / DISPLAY_SIZE as f64) * 100.0;
+        std::println!("Simple graphics compression: {:.1}% ({} bytes)", compression_ratio, rle_len);
+
+        // Simple graphics should compress very well (<20%)
+        assert!(rle_len < (DISPLAY_SIZE as f64 * 0.25) as usize,
+            "Simple graphics should compress to <25%, got {:.1}%", compression_ratio);
+    }
+
+    #[test]
+    fn test_subsample_downsample_2x() {
+        // Test 2x downsampling
+        let width = 8; // 8 bytes wide
+        let height = 4; // 4 rows
+        let input = vec![
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Row 0
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Row 1
+            0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, // Row 2
+            0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, // Row 3
+        ];
+
+        let mut output = vec![0u8; 8];
+        let len = downsample_image(&input, width, height, 2, &mut output);
+
+        // 2x downsampling: width/2 * height/2 = 4 bytes * 2 rows = 8 bytes
+        // Samples every 2nd byte horizontally, every 2nd row
+        assert_eq!(len, 8);
+        assert_eq!(&output[..len], &[
+            0xFF, 0xFF, 0xFF, 0xFF, // Row 0 (bytes 0,2,4,6)
+            0xAA, 0xAA, 0xAA, 0xAA, // Row 2 (bytes 0,2,4,6)
+        ]);
+    }
+
+    #[test]
+    fn test_subsample_upsample_2x_inplace() {
+        // Test 2x upsampling in-place
+        let width = 4;
+        let height = 4;
+        let mut buffer = vec![
+            0xFF, 0xAA,  // Downsampled data (2x2)
+            0x55, 0x00,
+            0x00, 0x00, 0x00, 0x00, // Extra space for upsampling
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let len = upsample_image_inplace(&mut buffer, 4, width, height, 2);
+
+        assert_eq!(len, 16); // 4x4 = 16 bytes
+        // Each pixel should be duplicated 2x2
+        assert_eq!(buffer[0], 0xFF); // (0,0)
+        assert_eq!(buffer[1], 0xFF); // (0,1)
+        assert_eq!(buffer[4], 0xFF); // (1,0)
+        assert_eq!(buffer[5], 0xFF); // (1,1)
+        assert_eq!(buffer[2], 0xAA); // (0,2)
+        assert_eq!(buffer[3], 0xAA); // (0,3)
+    }
+
+    #[test]
+    fn test_subsample_roundtrip_2x() {
+        // Test downsampling then upsampling
+        const WIDTH: usize = 8;
+        const HEIGHT: usize = 8;
+        let mut original = vec![0u8; WIDTH * HEIGHT];
+
+        // Create a simple pattern
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                original[y * WIDTH + x] = ((y / 2) * 2 + (x / 2)) as u8;
+            }
+        }
+
+        // Downsample
+        let mut downsampled = vec![0u8; (WIDTH / 2) * (HEIGHT / 2)];
+        let down_len = downsample_image(&original, WIDTH, HEIGHT, 2, &mut downsampled);
+
+        assert_eq!(down_len, 16); // 4x4
+
+        // Upsample in-place
+        let mut upsampled = vec![0u8; WIDTH * HEIGHT];
+        upsampled[..down_len].copy_from_slice(&downsampled[..down_len]);
+        let up_len = upsample_image_inplace(&mut upsampled, down_len, WIDTH, HEIGHT, 2);
+
+        assert_eq!(up_len, WIDTH * HEIGHT);
+    }
+
+    #[test]
+    fn test_e2e_subsampling_2x() {
+        // Test full pipeline with 2x subsampling for a photo-like image
+        const FULL_WIDTH: usize = 50;  // 400 pixels / 8
+        const FULL_HEIGHT: usize = 300;
+        const FULL_SIZE: usize = FULL_WIDTH * FULL_HEIGHT;
+        const SUBSAMPLE: u32 = 2;
+
+        // Create a dithered photo-like pattern (worst case for RLE)
+        let mut original = vec![0u8; FULL_SIZE];
+        for i in 0..FULL_SIZE {
+            original[i] = match i % 7 {
+                0 => 0xFF,
+                1 => 0xAA,
+                2 => 0x55,
+                3 => 0x00,
+                4 => 0xCC,
+                5 => 0x33,
+                _ => 0x0F,
+            };
+        }
+
+        std::println!("Original size: {} bytes", original.len());
+
+        // Downsample (server-side)
+        let downsampled_size = (FULL_WIDTH / SUBSAMPLE as usize) * (FULL_HEIGHT / SUBSAMPLE as usize);
+        let mut downsampled = vec![0u8; downsampled_size];
+        let down_len = downsample_image(&original, FULL_WIDTH, FULL_HEIGHT, SUBSAMPLE, &mut downsampled);
+
+        std::println!("Downsampled to: {} bytes ({:.1}% of original)",
+            down_len, (down_len as f64 / FULL_SIZE as f64) * 100.0);
+
+        // RLE compress the downsampled data
+        let mut rle_compressed = vec![0u8; downsampled_size * 2];
+        let rle_len = rle_encode(&downsampled[..down_len], &mut rle_compressed);
+
+        std::println!("RLE compressed: {} bytes ({:.1}% of original)",
+            rle_len, (rle_len as f64 / FULL_SIZE as f64) * 100.0);
+
+        // 2x subsampling with worst-case dithered data: ~7.5KB (50% of original)
+        // This is still an improvement but not enough for <7KB target
+        // For real photos with more uniform regions, compression will be much better
+        assert!(rle_len < FULL_SIZE, "Should be smaller than original, got {} bytes", rle_len);
+
+        // Base64 encode
+        let mut base64_buf = vec![0u8; rle_len * 2];
+        let b64_str = base64_encode(&rle_compressed[..rle_len], &mut base64_buf).unwrap();
+
+        // Create JSON payload with subsample parameter
+        let json_string = std::format!(
+            r#"{{"frame":"{}","subsample":"2","requires_response":true}}"#,
+            b64_str
+        );
+
+        std::println!("JSON payload: {} bytes", json_string.len());
+
+        // Decode on client side
+        let mut json_bytes = vec![0u8; json_string.len() + FULL_SIZE + 1000];
+        json_bytes[..json_string.len()].copy_from_slice(json_string.as_bytes());
+
+        let (final_len, requires_response) = decode_json_rle_base64(&mut json_bytes)
+            .expect("Decoding should succeed");
+
+        std::println!("Final upsampled size: {} bytes", final_len);
+
+        // Should be back to full size
+        assert_eq!(final_len, FULL_SIZE, "Should upsample back to full size");
+        assert_eq!(requires_response, true);
+
+        let compression_ratio = (rle_len as f64 / FULL_SIZE as f64) * 100.0;
+        std::println!("✓ 2x subsampling: {}KB → {}KB ({:.1}% compression)",
+            FULL_SIZE / 1000, rle_len / 1000, compression_ratio);
+    }
+
+    #[test]
+    fn test_e2e_subsampling_4x() {
+        // Test 4x subsampling for extreme compression
+        const FULL_WIDTH: usize = 50;  // 400 pixels / 8
+        const FULL_HEIGHT: usize = 300;
+        const FULL_SIZE: usize = FULL_WIDTH * FULL_HEIGHT;
+        const SUBSAMPLE: u32 = 4;
+
+        // Create a complex pattern
+        let mut original = vec![0u8; FULL_SIZE];
+        for i in 0..FULL_SIZE {
+            original[i] = (i % 256) as u8;
+        }
+
+        // Downsample (server-side)
+        let downsampled_size = (FULL_WIDTH / SUBSAMPLE as usize) * (FULL_HEIGHT / SUBSAMPLE as usize);
+        let mut downsampled = vec![0u8; downsampled_size];
+        let down_len = downsample_image(&original, FULL_WIDTH, FULL_HEIGHT, SUBSAMPLE, &mut downsampled);
+
+        std::println!("4x downsample: {} bytes ({:.1}% of original)",
+            down_len, (down_len as f64 / FULL_SIZE as f64) * 100.0);
+
+        // RLE compress
+        let mut rle_compressed = vec![0u8; downsampled_size * 2];
+        let rle_len = rle_encode(&downsampled[..down_len], &mut rle_compressed);
+
+        // Base64 encode
+        let mut base64_buf = vec![0u8; rle_len * 2];
+        let b64_str = base64_encode(&rle_compressed[..rle_len], &mut base64_buf).unwrap();
+
+        // Create JSON with subsample=4
+        let json_string = std::format!(
+            r#"{{"frame":"{}","subsample":"4","requires_response":false}}"#,
+            b64_str
+        );
+
+        // Decode
+        let mut json_bytes = vec![0u8; json_string.len() + FULL_SIZE + 1000];
+        json_bytes[..json_string.len()].copy_from_slice(json_string.as_bytes());
+
+        let (final_len, requires_response) = decode_json_rle_base64(&mut json_bytes)
+            .expect("Decoding should succeed");
+
+        assert_eq!(final_len, FULL_SIZE);
+        assert_eq!(requires_response, false);
+
+        std::println!("✓ 4x subsampling: {}KB → {}KB ({:.1}% compression)",
+            FULL_SIZE / 1000, rle_len / 1000, (rle_len as f64 / FULL_SIZE as f64) * 100.0);
+    }
+
+    #[test]
+    fn test_subsample_json_parsing() {
+        // Test that JSON with subsample field parses correctly
+        let json1 = b"{\"frame\":\"AQID\",\"subsample\":\"2\",\"requires_response\":true}";
+        let parsed1: BinaryPayload = serde_json_core::from_slice(json1).unwrap().0;
+        assert_eq!(parsed1.subsample, Some(SubsamplingFactor::Two));
+
+        let json2 = b"{\"frame\":\"AQID\",\"subsample\":\"4\",\"requires_response\":true}";
+        let parsed2: BinaryPayload = serde_json_core::from_slice(json2).unwrap().0;
+        assert_eq!(parsed2.subsample, Some(SubsamplingFactor::Four));
+
+        let json3 = b"{\"frame\":\"AQID\",\"requires_response\":true}";
+        let parsed3: BinaryPayload = serde_json_core::from_slice(json3).unwrap().0;
+        assert_eq!(parsed3.subsample, None);
     }
 }
