@@ -8,8 +8,9 @@ use serde::Deserialize;
 
 // For 400x300 display: width = 50 bytes (400 pixels / 8), height = 300 pixels
 // These constants should match the display size
-const DISPLAY_WIDTH_BYTES: usize = 50; // 400 pixels / 8 bits
+const DISPLAY_WIDTH: usize = 400;
 const DISPLAY_HEIGHT: usize = 300;
+const DISPLAY_WIDTH_BYTES: usize = DISPLAY_WIDTH / 8; // 400 pixels / 8 bits
 
 /// Subsampling factor for image downsampling/upsampling
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
