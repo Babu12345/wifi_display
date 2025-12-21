@@ -6,6 +6,11 @@
 use base64ct::{Base64, Encoding};
 use serde::Deserialize;
 
+// For 400x300 display: width = 50 bytes (400 pixels / 8), height = 300 pixels
+// These constants should match the display size
+const DISPLAY_WIDTH_BYTES: usize = 50; // 400 pixels / 8 bits
+const DISPLAY_HEIGHT: usize = 300;
+
 /// Subsampling factor for image downsampling/upsampling
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum SubsamplingFactor {
@@ -79,9 +84,7 @@ pub fn rle_encode(data: &[u8], output: &mut [u8]) -> usize {
         let mut count = 1u8;
 
         // Count consecutive identical bytes (max 255)
-        while i + (count as usize) < data.len()
-              && data[i + (count as usize)] == byte
-              && count < 255
+        while i + (count as usize) < data.len() && data[i + (count as usize)] == byte && count < 255
         {
             count += 1;
         }
@@ -157,8 +160,7 @@ pub fn base64_decode_inplace<'a>(
     base64_str: &str,
     output: &'a mut [u8],
 ) -> Result<&'a [u8], &'static str> {
-    Base64::decode(base64_str, output)
-        .map_err(|_| "Failed to decode base64 data")
+    Base64::decode(base64_str, output).map_err(|_| "Failed to decode base64 data")
 }
 
 /// Encode data to base64 string
@@ -169,12 +171,8 @@ pub fn base64_decode_inplace<'a>(
 ///
 /// # Returns
 /// Base64 encoded string or error
-pub fn base64_encode<'a>(
-    data: &[u8],
-    output: &'a mut [u8],
-) -> Result<&'a str, &'static str> {
-    Base64::encode(data, output)
-        .map_err(|_| "Failed to encode base64 data")
+pub fn base64_encode<'a>(data: &[u8], output: &'a mut [u8]) -> Result<&'a str, &'static str> {
+    Base64::encode(data, output).map_err(|_| "Failed to encode base64 data")
 }
 
 /// Downsample image data by a given factor
@@ -300,7 +298,12 @@ pub fn decode_json_rle_base64(json_data: &mut [u8]) -> Result<(usize, bool), &'s
 
         let subsample = parsed.subsample.unwrap_or(SubsamplingFactor::None);
 
-        (offset, parsed.frame.len(), subsample, parsed.requires_response)
+        (
+            offset,
+            parsed.frame.len(),
+            subsample,
+            parsed.requires_response,
+        )
     };
 
     // Decode base64 in-place: move base64 string to end, then decode to beginning
@@ -314,8 +317,8 @@ pub fn decode_json_rle_base64(json_data: &mut [u8]) -> Result<(usize, bool), &'s
         let (decode_dst, base64_src) = json_data.split_at_mut(base64_end_offset);
 
         // Convert base64 source to string
-        let base64_str = core::str::from_utf8(base64_src)
-            .map_err(|_| "Invalid UTF-8 in base64 data")?;
+        let base64_str =
+            core::str::from_utf8(base64_src).map_err(|_| "Invalid UTF-8 in base64 data")?;
 
         // Decode into the destination part (no overlap now)
         base64_decode_inplace(base64_str, decode_dst)?.len()
@@ -326,11 +329,6 @@ pub fn decode_json_rle_base64(json_data: &mut [u8]) -> Result<(usize, bool), &'s
 
     // Upsample if needed
     let final_len = if subsample_factor != SubsamplingFactor::None {
-        // For 400x300 display: width = 50 bytes (400 pixels / 8), height = 300 pixels
-        // These constants should match the display size
-        const DISPLAY_WIDTH_BYTES: usize = 50;  // 400 pixels / 8 bits
-        const DISPLAY_HEIGHT: usize = 300;
-
         upsample_image_inplace(
             json_data,
             decompressed_len,
@@ -348,8 +346,8 @@ pub fn decode_json_rle_base64(json_data: &mut [u8]) -> Result<(usize, bool), &'s
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use std::vec;
     use super::*;
+    use std::vec;
 
     #[test]
     fn test_rle_encode_simple() {
@@ -428,7 +426,11 @@ mod tests {
         let len = rle_encode(&input, &mut output);
 
         // Should be much smaller than original
-        assert!(len < 100, "Compressed size {} should be much smaller than 1000", len);
+        assert!(
+            len < 100,
+            "Compressed size {} should be much smaller than 1000",
+            len
+        );
     }
 
     #[test]
@@ -564,9 +566,14 @@ mod tests {
         json_bytes[..json.len()].copy_from_slice(json);
 
         // Find end of JSON (first zero or end of buffer)
-        let json_end = json_bytes.iter().position(|&b| b == 0).unwrap_or(json_bytes.len());
+        let json_end = json_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(json_bytes.len());
 
-        let parsed: BinaryPayload = serde_json_core::from_slice(&json_bytes[..json_end]).unwrap().0;
+        let parsed: BinaryPayload = serde_json_core::from_slice(&json_bytes[..json_end])
+            .unwrap()
+            .0;
         assert_eq!(parsed.frame, "A/8CAA==");
         assert_eq!(parsed.requires_response, true);
     }
@@ -620,11 +627,18 @@ mod tests {
         let rle_len = rle_encode(&original, &mut rle_compressed);
         rle_compressed.truncate(rle_len);
 
-        std::println!("RLE compressed size: {} bytes ({:.1}% of original)",
-            rle_len, (rle_len as f64 / original.len() as f64) * 100.0);
+        std::println!(
+            "RLE compressed size: {} bytes ({:.1}% of original)",
+            rle_len,
+            (rle_len as f64 / original.len() as f64) * 100.0
+        );
 
         // Verify compression achieved <7KB target
-        assert!(rle_len < 7000, "RLE compression should reduce 15KB to <7KB, got {} bytes", rle_len);
+        assert!(
+            rle_len < 7000,
+            "RLE compression should reduce 15KB to <7KB, got {} bytes",
+            rle_len
+        );
 
         // Step 2: Base64 encode the compressed data
         let base64_max_size = ((rle_len + 2) / 3) * 4; // Base64 expands by ~33%
@@ -635,10 +649,7 @@ mod tests {
         std::println!("Base64 encoded size: {} bytes", b64_str.len());
 
         // Step 3: Create JSON payload (BinaryPayload format)
-        let json_string = std::format!(
-            r#"{{"frame":"{}","requires_response":true}}"#,
-            b64_str
-        );
+        let json_string = std::format!(r#"{{"frame":"{}","requires_response":true}}"#, b64_str);
         std::println!("JSON payload size: {} bytes", json_string.len());
 
         // Allocate buffer with extra space for in-place decoding
@@ -646,20 +657,28 @@ mod tests {
         json_bytes[..json_string.len()].copy_from_slice(json_string.as_bytes());
 
         // Step 4: Decode using the full pipeline (simulates real-world usage)
-        let (decompressed_len, requires_response) = decode_json_rle_base64(&mut json_bytes)
-            .expect("Decoding should succeed");
+        let (decompressed_len, requires_response) =
+            decode_json_rle_base64(&mut json_bytes).expect("Decoding should succeed");
 
         std::println!("Decompressed size: {} bytes", decompressed_len);
 
         // Step 5: Verify results
-        assert_eq!(decompressed_len, DISPLAY_SIZE,
-            "Decompressed data should be {} bytes", DISPLAY_SIZE);
+        assert_eq!(
+            decompressed_len, DISPLAY_SIZE,
+            "Decompressed data should be {} bytes",
+            DISPLAY_SIZE
+        );
         assert_eq!(requires_response, true, "requires_response should be true");
-        assert_eq!(&json_bytes[..decompressed_len], &original[..],
-            "Decompressed data should match original exactly");
+        assert_eq!(
+            &json_bytes[..decompressed_len],
+            &original[..],
+            "Decompressed data should match original exactly"
+        );
 
-        std::println!("✓ E2E test passed: 15KB → {}KB (compressed) → 15KB (decompressed)",
-            rle_len / 1000);
+        std::println!(
+            "✓ E2E test passed: 15KB → {}KB (compressed) → 15KB (decompressed)",
+            rle_len / 1000
+        );
     }
 
     #[test]
@@ -691,11 +710,18 @@ mod tests {
         let rle_len = rle_encode(&original, &mut rle_compressed);
 
         let compression_ratio = (rle_len as f64 / DISPLAY_SIZE as f64) * 100.0;
-        std::println!("Text document compression: {:.1}% ({} bytes)", compression_ratio, rle_len);
+        std::println!(
+            "Text document compression: {:.1}% ({} bytes)",
+            compression_ratio,
+            rle_len
+        );
 
         // Text documents should compress to 30-50% with RLE
-        assert!(rle_len < (DISPLAY_SIZE as f64 * 0.6) as usize,
-            "Text should compress to <60%, got {:.1}%", compression_ratio);
+        assert!(
+            rle_len < (DISPLAY_SIZE as f64 * 0.6) as usize,
+            "Text should compress to <60%, got {:.1}%",
+            compression_ratio
+        );
     }
 
     #[test]
@@ -722,8 +748,11 @@ mod tests {
         let rle_len = rle_encode(&original, &mut rle_compressed);
 
         let compression_ratio = (rle_len as f64 / DISPLAY_SIZE as f64) * 100.0;
-        std::println!("Dithered image (worst case) compression: {:.1}% ({} bytes)",
-            compression_ratio, rle_len);
+        std::println!(
+            "Dithered image (worst case) compression: {:.1}% ({} bytes)",
+            compression_ratio,
+            rle_len
+        );
 
         // Dithered images might not compress well, could even expand to ~200%
         // This is expected for RLE on highly varied data
@@ -761,11 +790,18 @@ mod tests {
         let rle_len = rle_encode(&original, &mut rle_compressed);
 
         let compression_ratio = (rle_len as f64 / DISPLAY_SIZE as f64) * 100.0;
-        std::println!("QR code compression: {:.1}% ({} bytes)", compression_ratio, rle_len);
+        std::println!(
+            "QR code compression: {:.1}% ({} bytes)",
+            compression_ratio,
+            rle_len
+        );
 
         // QR codes should compress reasonably well (20-40%)
-        assert!(rle_len < (DISPLAY_SIZE as f64 * 0.5) as usize,
-            "QR code should compress to <50%, got {:.1}%", compression_ratio);
+        assert!(
+            rle_len < (DISPLAY_SIZE as f64 * 0.5) as usize,
+            "QR code should compress to <50%, got {:.1}%",
+            compression_ratio
+        );
     }
 
     #[test]
@@ -792,11 +828,18 @@ mod tests {
         let rle_len = rle_encode(&original, &mut rle_compressed);
 
         let compression_ratio = (rle_len as f64 / DISPLAY_SIZE as f64) * 100.0;
-        std::println!("Simple graphics compression: {:.1}% ({} bytes)", compression_ratio, rle_len);
+        std::println!(
+            "Simple graphics compression: {:.1}% ({} bytes)",
+            compression_ratio,
+            rle_len
+        );
 
         // Simple graphics should compress very well (<20%)
-        assert!(rle_len < (DISPLAY_SIZE as f64 * 0.25) as usize,
-            "Simple graphics should compress to <25%, got {:.1}%", compression_ratio);
+        assert!(
+            rle_len < (DISPLAY_SIZE as f64 * 0.25) as usize,
+            "Simple graphics should compress to <25%, got {:.1}%",
+            compression_ratio
+        );
     }
 
     #[test]
@@ -817,10 +860,13 @@ mod tests {
         // 2x downsampling: width/2 * height/2 = 4 bytes * 2 rows = 8 bytes
         // Samples every 2nd byte horizontally, every 2nd row
         assert_eq!(len, 8);
-        assert_eq!(&output[..len], &[
-            0xFF, 0xFF, 0xFF, 0xFF, // Row 0 (bytes 0,2,4,6)
-            0xAA, 0xAA, 0xAA, 0xAA, // Row 2 (bytes 0,2,4,6)
-        ]);
+        assert_eq!(
+            &output[..len],
+            &[
+                0xFF, 0xFF, 0xFF, 0xFF, // Row 0 (bytes 0,2,4,6)
+                0xAA, 0xAA, 0xAA, 0xAA, // Row 2 (bytes 0,2,4,6)
+            ]
+        );
     }
 
     #[test]
@@ -829,17 +875,15 @@ mod tests {
         let width = 4;
         let height = 4;
         let mut buffer = vec![
-            0xFF, 0xAA,  // Downsampled data (2x2)
-            0x55, 0x00,
-            0x00, 0x00, 0x00, 0x00, // Extra space for upsampling
-            0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
+            0xFF, 0xAA, // Downsampled data (2x2)
+            0x55, 0x00, 0x00, 0x00, 0x00, 0x00, // Extra space for upsampling
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
 
         let len = upsample_image_inplace(&mut buffer, 4, width, height, 2);
 
         assert_eq!(len, 16); // 4x4 = 16 bytes
-        // Each pixel should be duplicated 2x2
+                             // Each pixel should be duplicated 2x2
         assert_eq!(buffer[0], 0xFF); // (0,0)
         assert_eq!(buffer[1], 0xFF); // (0,1)
         assert_eq!(buffer[4], 0xFF); // (1,0)
@@ -879,7 +923,7 @@ mod tests {
     #[test]
     fn test_e2e_subsampling_2x() {
         // Test full pipeline with 2x subsampling for a photo-like image
-        const FULL_WIDTH: usize = 50;  // 400 pixels / 8
+        const FULL_WIDTH: usize = 50; // 400 pixels / 8
         const FULL_HEIGHT: usize = 300;
         const FULL_SIZE: usize = FULL_WIDTH * FULL_HEIGHT;
         const SUBSAMPLE: u32 = 2;
@@ -901,24 +945,41 @@ mod tests {
         std::println!("Original size: {} bytes", original.len());
 
         // Downsample (server-side)
-        let downsampled_size = (FULL_WIDTH / SUBSAMPLE as usize) * (FULL_HEIGHT / SUBSAMPLE as usize);
+        let downsampled_size =
+            (FULL_WIDTH / SUBSAMPLE as usize) * (FULL_HEIGHT / SUBSAMPLE as usize);
         let mut downsampled = vec![0u8; downsampled_size];
-        let down_len = downsample_image(&original, FULL_WIDTH, FULL_HEIGHT, SUBSAMPLE, &mut downsampled);
+        let down_len = downsample_image(
+            &original,
+            FULL_WIDTH,
+            FULL_HEIGHT,
+            SUBSAMPLE,
+            &mut downsampled,
+        );
 
-        std::println!("Downsampled to: {} bytes ({:.1}% of original)",
-            down_len, (down_len as f64 / FULL_SIZE as f64) * 100.0);
+        std::println!(
+            "Downsampled to: {} bytes ({:.1}% of original)",
+            down_len,
+            (down_len as f64 / FULL_SIZE as f64) * 100.0
+        );
 
         // RLE compress the downsampled data
         let mut rle_compressed = vec![0u8; downsampled_size * 2];
         let rle_len = rle_encode(&downsampled[..down_len], &mut rle_compressed);
 
-        std::println!("RLE compressed: {} bytes ({:.1}% of original)",
-            rle_len, (rle_len as f64 / FULL_SIZE as f64) * 100.0);
+        std::println!(
+            "RLE compressed: {} bytes ({:.1}% of original)",
+            rle_len,
+            (rle_len as f64 / FULL_SIZE as f64) * 100.0
+        );
 
         // 2x subsampling with worst-case dithered data: ~7.5KB (50% of original)
         // This is still an improvement but not enough for <7KB target
         // For real photos with more uniform regions, compression will be much better
-        assert!(rle_len < FULL_SIZE, "Should be smaller than original, got {} bytes", rle_len);
+        assert!(
+            rle_len < FULL_SIZE,
+            "Should be smaller than original, got {} bytes",
+            rle_len
+        );
 
         // Base64 encode
         let mut base64_buf = vec![0u8; rle_len * 2];
@@ -936,8 +997,8 @@ mod tests {
         let mut json_bytes = vec![0u8; json_string.len() + FULL_SIZE + 1000];
         json_bytes[..json_string.len()].copy_from_slice(json_string.as_bytes());
 
-        let (final_len, requires_response) = decode_json_rle_base64(&mut json_bytes)
-            .expect("Decoding should succeed");
+        let (final_len, requires_response) =
+            decode_json_rle_base64(&mut json_bytes).expect("Decoding should succeed");
 
         std::println!("Final upsampled size: {} bytes", final_len);
 
@@ -946,14 +1007,18 @@ mod tests {
         assert_eq!(requires_response, true);
 
         let compression_ratio = (rle_len as f64 / FULL_SIZE as f64) * 100.0;
-        std::println!("✓ 2x subsampling: {}KB → {}KB ({:.1}% compression)",
-            FULL_SIZE / 1000, rle_len / 1000, compression_ratio);
+        std::println!(
+            "✓ 2x subsampling: {}KB → {}KB ({:.1}% compression)",
+            FULL_SIZE / 1000,
+            rle_len / 1000,
+            compression_ratio
+        );
     }
 
     #[test]
     fn test_e2e_subsampling_4x() {
         // Test 4x subsampling for extreme compression
-        const FULL_WIDTH: usize = 50;  // 400 pixels / 8
+        const FULL_WIDTH: usize = 50; // 400 pixels / 8
         const FULL_HEIGHT: usize = 300;
         const FULL_SIZE: usize = FULL_WIDTH * FULL_HEIGHT;
         const SUBSAMPLE: u32 = 4;
@@ -965,12 +1030,22 @@ mod tests {
         }
 
         // Downsample (server-side)
-        let downsampled_size = (FULL_WIDTH / SUBSAMPLE as usize) * (FULL_HEIGHT / SUBSAMPLE as usize);
+        let downsampled_size =
+            (FULL_WIDTH / SUBSAMPLE as usize) * (FULL_HEIGHT / SUBSAMPLE as usize);
         let mut downsampled = vec![0u8; downsampled_size];
-        let down_len = downsample_image(&original, FULL_WIDTH, FULL_HEIGHT, SUBSAMPLE, &mut downsampled);
+        let down_len = downsample_image(
+            &original,
+            FULL_WIDTH,
+            FULL_HEIGHT,
+            SUBSAMPLE,
+            &mut downsampled,
+        );
 
-        std::println!("4x downsample: {} bytes ({:.1}% of original)",
-            down_len, (down_len as f64 / FULL_SIZE as f64) * 100.0);
+        std::println!(
+            "4x downsample: {} bytes ({:.1}% of original)",
+            down_len,
+            (down_len as f64 / FULL_SIZE as f64) * 100.0
+        );
 
         // RLE compress
         let mut rle_compressed = vec![0u8; downsampled_size * 2];
@@ -990,14 +1065,18 @@ mod tests {
         let mut json_bytes = vec![0u8; json_string.len() + FULL_SIZE + 1000];
         json_bytes[..json_string.len()].copy_from_slice(json_string.as_bytes());
 
-        let (final_len, requires_response) = decode_json_rle_base64(&mut json_bytes)
-            .expect("Decoding should succeed");
+        let (final_len, requires_response) =
+            decode_json_rle_base64(&mut json_bytes).expect("Decoding should succeed");
 
         assert_eq!(final_len, FULL_SIZE);
         assert_eq!(requires_response, false);
 
-        std::println!("✓ 4x subsampling: {}KB → {}KB ({:.1}% compression)",
-            FULL_SIZE / 1000, rle_len / 1000, (rle_len as f64 / FULL_SIZE as f64) * 100.0);
+        std::println!(
+            "✓ 4x subsampling: {}KB → {}KB ({:.1}% compression)",
+            FULL_SIZE / 1000,
+            rle_len / 1000,
+            (rle_len as f64 / FULL_SIZE as f64) * 100.0
+        );
     }
 
     #[test]
