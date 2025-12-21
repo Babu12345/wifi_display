@@ -36,8 +36,7 @@ const MQTT_PORT: u16 = 8883; // TLS port
 // Client ID: Update this 6-character alphanumeric code for each board
 const MQTT_CLIENT_ID: &str = "client1";
 const MQTT_TIMEOUT_SECS: u16 = 120;
-// MQTT buffer size: 16KB to support 15KB raw binary display data + JSON overhead
-const MQTT_BUFFER_SIZE: usize = 17384;
+const MQTT_BUFFER_SIZE: usize = 15384;
 
 // Static buffers for MQTT to avoid stack overflow
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
