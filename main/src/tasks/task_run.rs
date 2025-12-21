@@ -8,7 +8,6 @@ use crate::tasks::task_display_handler::{
     DISPLAY_CHANNEL_SIZE, DisplayMessage, queue_qr_display, queue_raw_display, queue_text_display,
 };
 use crate::{AsyncStack, NotificationType};
-use decoding::BinaryPayload;
 use embassy_futures::select::{Either3, select3};
 use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, watch::Receiver};
@@ -459,27 +458,38 @@ async fn handle_live_mqtt_updates<'a>(
 
                 match topic {
                     topic if topic == raw_topic.as_str() => {
-                        // Handle raw binary display data
-                        log::info!("Processing raw binary display data");
+                        // Handle raw binary display data chunk
+                        log::info!("Processing raw binary display data chunk");
 
-                        let requires_response = if let Ok((parsed, _)) =
-                            serde_json_core::from_slice::<BinaryPayload>(payload)
+                        // Parse chunk metadata to determine if response is needed
+                        let metadata = if let Ok(meta) =
+                            decoding::parse_chunk_metadata(payload)
                         {
-                            parsed.requires_response
+                            log::info!(
+                                "Received chunk {}/{}, requires_response: {}",
+                                meta.chunk_index + 1,
+                                meta.total_chunks,
+                                meta.requires_response
+                            );
+                            meta
                         } else {
                             log::warn!(
-                                "Failed to parse requires_response field, defaulting to false"
+                                "Failed to parse chunk metadata, defaulting to no response"
                             );
-                            false
+                            decoding::ChunkMetadata {
+                                requires_response: false,
+                                chunk_index: 0,
+                                total_chunks: 1,
+                            }
                         };
 
-                        // Queue the display data
+                        // Queue the chunk data for display
                         queue_raw_display(display_channel, payload);
-                        log::info!("Raw display data queued successfully");
+                        log::info!("Chunk {} queued successfully", metadata.chunk_index);
 
-                        // Send response only if required
-                        if !requires_response {
-                            log::info!("No response required");
+                        // Send response only if required (typically for the last chunk)
+                        if !metadata.requires_response {
+                            log::info!("No response required for this chunk");
                             continue;
                         }
                         let response_msg = b"{\"response\":\"success\"}";

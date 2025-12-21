@@ -9,16 +9,20 @@ use serde::Deserialize;
 
 
 /// JSON payload structure for raw binary display data
-/// Expected format: {"frame": "base64_encoded_string", "requires_response": true/false}
-/// The frame data is base64-encoded RLE compressed data
+/// Expected format: {"frame": "base64_encoded_string", "requires_response": true/false, "chunk_index": 0, "total_chunks": 1}
+/// The frame data is base64-encoded RLE compressed data chunk
 /// RLE format: [count, byte, count, byte, ...] where count is u8 (1-255)
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug, Clone, Copy)]
 pub struct BinaryPayload<'a> {
     #[serde(borrow)]
-    /// Base64-encoded RLE compressed frame data
+    /// Base64-encoded RLE compressed frame data chunk
     pub frame: &'a str,
     /// Whether the client requires a response
     pub requires_response: bool,
+    /// Index of this chunk (0-based)
+    pub chunk_index: usize,
+    /// Total number of chunks
+    pub total_chunks: usize,
 }
 
 /// RLE encoder for binary data
@@ -139,37 +143,73 @@ pub fn base64_encode<'a>(data: &[u8], output: &'a mut [u8]) -> Result<&'a str, &
 }
 
 
-/// Decode JSON payload containing base64-encoded RLE data
+/// Metadata about a chunk extracted from JSON payload
+#[derive(Debug, Clone, Copy)]
+pub struct ChunkMetadata {
+    /// Whether the client requires a response
+    pub requires_response: bool,
+    /// Index of this chunk (0-based)
+    pub chunk_index: usize,
+    /// Total number of chunks
+    pub total_chunks: usize,
+}
+
+/// Parse chunk metadata from JSON payload without decoding the frame data
 ///
-/// This function performs the complete decoding pipeline:
-/// 1. Parse JSON to extract base64 string
+/// # Arguments
+/// * `json_data` - Buffer containing JSON payload
+///
+/// # Returns
+/// ChunkMetadata or error message
+pub fn parse_chunk_metadata(json_data: &[u8]) -> Result<ChunkMetadata, &'static str> {
+    let json_end = json_data
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(json_data.len());
+
+    let json_slice = &json_data[..json_end];
+    let parsed: BinaryPayload = serde_json_core::from_slice(json_slice)
+        .map_err(|_| "Failed to parse JSON payload")?
+        .0;
+
+    Ok(ChunkMetadata {
+        requires_response: parsed.requires_response,
+        chunk_index: parsed.chunk_index,
+        total_chunks: parsed.total_chunks,
+    })
+}
+
+/// Decode a single chunk from JSON payload containing base64-encoded RLE data
+///
+/// This function performs the decoding pipeline for one chunk:
+/// 1. Parse JSON to extract base64 string and chunk metadata
 /// 2. Decode base64 to RLE compressed data
 /// 3. Decompress RLE data to binary
 ///
 /// All operations are done in-place within the provided buffer.
 ///
 /// # Arguments
-/// * `json_data` - Mutable buffer containing JSON payload; will be overwritten with decompressed data
+/// * `json_data` - Mutable buffer containing JSON payload; will be overwritten with decompressed chunk data
 ///
 /// # Returns
-/// Tuple of (decompressed_data_length, requires_response) or error message
+/// Tuple of (decompressed_chunk_length, chunk_metadata) or error message
 ///
 /// # Example
 /// ```no_run
-/// let mut buffer = b"{\"frame\":\"...\",\"requires_response\":true}".to_vec();
-/// let (len, requires_response) = decoding::decode_json_rle_base64(&mut buffer)?;
-/// // buffer[..len] now contains the decompressed frame data
+/// let mut buffer = b"{\"frame\":\"...\",\"requires_response\":true,\"chunk_index\":0,\"total_chunks\":1}".to_vec();
+/// let (len, metadata) = decoding::decode_chunk(&mut buffer)?;
+/// // buffer[..len] now contains the decompressed chunk data
 /// # Ok::<(), &str>(())
 /// ```
-pub fn decode_json_rle_base64(json_data: &mut [u8]) -> Result<(usize, bool), &'static str> {
+pub fn decode_chunk(json_data: &mut [u8]) -> Result<(usize, ChunkMetadata), &'static str> {
     // Find the end of the JSON data (look for closing brace followed by zeros or end of buffer)
     let json_end = json_data
         .iter()
         .position(|&b| b == 0)
         .unwrap_or(json_data.len());
 
-    // Parse JSON to extract base64 string position and response flag
-    let (base64_start, base64_len, requires_response) = {
+    // Parse JSON to extract base64 string position, chunk metadata
+    let (base64_start, base64_len, metadata) = {
         let json_slice = &json_data[..json_end];
         let parsed: BinaryPayload = serde_json_core::from_slice(json_slice)
             .map_err(|_| "Failed to parse JSON payload")?
@@ -180,11 +220,13 @@ pub fn decode_json_rle_base64(json_data: &mut [u8]) -> Result<(usize, bool), &'s
         let json_ptr = json_data.as_ptr();
         let offset = unsafe { base64_ptr.offset_from(json_ptr) } as usize;
 
-        (
-            offset,
-            parsed.frame.len(),
-            parsed.requires_response,
-        )
+        let metadata = ChunkMetadata {
+            requires_response: parsed.requires_response,
+            chunk_index: parsed.chunk_index,
+            total_chunks: parsed.total_chunks,
+        };
+
+        (offset, parsed.frame.len(), metadata)
     };
 
     // Decode base64 in-place: move base64 string to end, then decode to beginning
@@ -208,7 +250,7 @@ pub fn decode_json_rle_base64(json_data: &mut [u8]) -> Result<(usize, bool), &'s
     // RLE decode in-place: read from end, write to beginning
     let decompressed_len = rle_decode_inplace(json_data, decoded_len);
 
-    Ok((decompressed_len, requires_response))
+    Ok((decompressed_len, metadata))
 }
 
 #[cfg(test)]
@@ -345,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_json_rle_base64_simple() {
+    fn test_decode_chunk_simple() {
         // Create test data
         let original = [0xFF, 0xFF, 0xFF, 0x00, 0x00];
 
@@ -359,21 +401,23 @@ mod tests {
         // Expected base64 for [3, 0xFF, 2, 0x00] is "A/8CAA=="
         assert_eq!(b64_str, "A/8CAA==");
 
-        // Create JSON payload - use hardcoded version to test
-        let json = b"{\"frame\":\"A/8CAA==\",\"requires_response\":true}";
+        // Create JSON payload with chunk metadata
+        let json = b"{\"frame\":\"A/8CAA==\",\"requires_response\":true,\"chunk_index\":0,\"total_chunks\":1}";
         let mut json_bytes = vec![0u8; json.len() + 100]; // Extra space for decompression
         json_bytes[..json.len()].copy_from_slice(json);
 
         // Decode
-        let (len, requires_response) = decode_json_rle_base64(&mut json_bytes).unwrap();
+        let (len, metadata) = decode_chunk(&mut json_bytes).unwrap();
 
         assert_eq!(len, original.len());
         assert_eq!(&json_bytes[..len], &original);
-        assert_eq!(requires_response, true);
+        assert_eq!(metadata.requires_response, true);
+        assert_eq!(metadata.chunk_index, 0);
+        assert_eq!(metadata.total_chunks, 1);
     }
 
     #[test]
-    fn test_decode_json_rle_base64_large() {
+    fn test_decode_chunk_large() {
         // Simulate e-ink display data (mostly white with some black)
         let mut original = [0xFF; 1000];
         for i in 100..110 {
@@ -387,49 +431,53 @@ mod tests {
         let mut base64_buf = [0u8; 3000];
         let b64_str = base64_encode(&rle_compressed[..rle_len], &mut base64_buf).unwrap();
 
-        // Create JSON payload
-        let json_string = std::format!(r#"{{"frame":"{}","requires_response":false}}"#, b64_str);
+        // Create JSON payload with chunk metadata
+        let json_string = std::format!(r#"{{"frame":"{}","requires_response":false,"chunk_index":0,"total_chunks":1}}"#, b64_str);
         let json = json_string.as_bytes();
         let mut json_bytes = vec![0u8; json.len() + 3000];
         json_bytes[..json.len()].copy_from_slice(json);
 
         // Decode
-        let (len, requires_response) = decode_json_rle_base64(&mut json_bytes).unwrap();
+        let (len, metadata) = decode_chunk(&mut json_bytes).unwrap();
 
         assert_eq!(len, original.len());
         assert_eq!(&json_bytes[..len], &original[..]);
-        assert_eq!(requires_response, false);
+        assert_eq!(metadata.requires_response, false);
+        assert_eq!(metadata.chunk_index, 0);
+        assert_eq!(metadata.total_chunks, 1);
     }
 
     #[test]
-    fn test_decode_json_invalid_json() {
+    fn test_decode_chunk_invalid_json() {
         let mut json_bytes = b"{invalid json}".to_vec();
-        let result = decode_json_rle_base64(&mut json_bytes);
+        let result = decode_chunk(&mut json_bytes);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_decode_json_invalid_base64() {
-        let json = b"{\"frame\":\"!!!invalid_base64!!!\",\"requires_response\":true}";
+    fn test_decode_chunk_invalid_base64() {
+        let json = b"{\"frame\":\"!!!invalid_base64!!!\",\"requires_response\":true,\"chunk_index\":0,\"total_chunks\":1}";
         let mut json_bytes = vec![0u8; 500];
         json_bytes[..json.len()].copy_from_slice(json);
 
-        let result = decode_json_rle_base64(&mut json_bytes);
+        let result = decode_chunk(&mut json_bytes);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_binary_payload_parsing() {
-        let json = b"{\"frame\":\"AQID\",\"requires_response\":true}";
+        let json = b"{\"frame\":\"AQID\",\"requires_response\":true,\"chunk_index\":0,\"total_chunks\":1}";
         let parsed: BinaryPayload = serde_json_core::from_slice(json).unwrap().0;
         assert_eq!(parsed.frame, "AQID");
         assert_eq!(parsed.requires_response, true);
+        assert_eq!(parsed.chunk_index, 0);
+        assert_eq!(parsed.total_chunks, 1);
     }
 
     #[test]
     fn test_binary_payload_parsing_with_padding() {
         // Test with extra zeros at the end - need to slice to avoid TrailingCharacters error
-        let json = b"{\"frame\":\"A/8CAA==\",\"requires_response\":true}";
+        let json = b"{\"frame\":\"A/8CAA==\",\"requires_response\":true,\"chunk_index\":0,\"total_chunks\":1}";
         let mut json_bytes = vec![0u8; json.len() + 100];
         json_bytes[..json.len()].copy_from_slice(json);
 
@@ -444,6 +492,8 @@ mod tests {
             .0;
         assert_eq!(parsed.frame, "A/8CAA==");
         assert_eq!(parsed.requires_response, true);
+        assert_eq!(parsed.chunk_index, 0);
+        assert_eq!(parsed.total_chunks, 1);
     }
 
     #[test]
@@ -516,8 +566,8 @@ mod tests {
 
         std::println!("Base64 encoded size: {} bytes", b64_str.len());
 
-        // Step 3: Create JSON payload (BinaryPayload format)
-        let json_string = std::format!(r#"{{"frame":"{}","requires_response":true}}"#, b64_str);
+        // Step 3: Create JSON payload (BinaryPayload format) as single chunk
+        let json_string = std::format!(r#"{{"frame":"{}","requires_response":true,"chunk_index":0,"total_chunks":1}}"#, b64_str);
         std::println!("JSON payload size: {} bytes", json_string.len());
 
         // Allocate buffer with extra space for in-place decoding
@@ -525,8 +575,8 @@ mod tests {
         json_bytes[..json_string.len()].copy_from_slice(json_string.as_bytes());
 
         // Step 4: Decode using the full pipeline (simulates real-world usage)
-        let (decompressed_len, requires_response) =
-            decode_json_rle_base64(&mut json_bytes).expect("Decoding should succeed");
+        let (decompressed_len, metadata) =
+            decode_chunk(&mut json_bytes).expect("Decoding should succeed");
 
         std::println!("Decompressed size: {} bytes", decompressed_len);
 
@@ -536,7 +586,9 @@ mod tests {
             "Decompressed data should be {} bytes",
             DISPLAY_SIZE
         );
-        assert_eq!(requires_response, true, "requires_response should be true");
+        assert_eq!(metadata.requires_response, true, "requires_response should be true");
+        assert_eq!(metadata.chunk_index, 0);
+        assert_eq!(metadata.total_chunks, 1);
         assert_eq!(
             &json_bytes[..decompressed_len],
             &original[..],
@@ -708,6 +760,92 @@ mod tests {
             "Simple graphics should compress to <25%, got {:.1}%",
             compression_ratio
         );
+    }
+
+    #[test]
+    fn test_multi_chunk_reassembly() {
+        // Test encoding and decoding data split into multiple chunks
+        // Each chunk contains uncompressed data that gets RLE-encoded independently
+        const CHUNK_SIZE: usize = 500; // Uncompressed chunk size
+        let original = [0xFF; 1500]; // Original data
+
+        let num_chunks = (original.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        std::println!(
+            "Splitting {} bytes into {} chunks of ~{} bytes each",
+            original.len(),
+            num_chunks,
+            CHUNK_SIZE
+        );
+
+        let mut reassembled = vec![0u8; original.len()];
+        let mut offset = 0;
+
+        for chunk_idx in 0..num_chunks {
+            let chunk_start = chunk_idx * CHUNK_SIZE;
+            let chunk_end = core::cmp::min(chunk_start + CHUNK_SIZE, original.len());
+            let chunk_data = &original[chunk_start..chunk_end];
+
+            // RLE encode this chunk
+            let mut rle_compressed = vec![0u8; chunk_data.len() * 2];
+            let rle_len = rle_encode(chunk_data, &mut rle_compressed);
+
+            // Base64 encode the RLE-compressed chunk
+            let mut base64_buf = vec![0u8; rle_len * 2];
+            let b64_str = base64_encode(&rle_compressed[..rle_len], &mut base64_buf).unwrap();
+
+            // Create JSON payload for this chunk
+            let is_last_chunk = chunk_idx == num_chunks - 1;
+            let json_string = std::format!(
+                r#"{{"frame":"{}","requires_response":{},"chunk_index":{},"total_chunks":{}}}"#,
+                b64_str, is_last_chunk, chunk_idx, num_chunks
+            );
+
+            std::println!(
+                "Chunk {}/{}: {} bytes uncompressed → {} bytes RLE → {} bytes base64 (JSON: {} bytes)",
+                chunk_idx + 1,
+                num_chunks,
+                chunk_data.len(),
+                rle_len,
+                b64_str.len(),
+                json_string.len()
+            );
+
+            // Decode chunk
+            let mut json_bytes = vec![0u8; json_string.len() + 2000];
+            json_bytes[..json_string.len()].copy_from_slice(json_string.as_bytes());
+
+            let (decoded_len, metadata) = decode_chunk(&mut json_bytes).unwrap();
+
+            // Verify metadata
+            assert_eq!(metadata.chunk_index, chunk_idx);
+            assert_eq!(metadata.total_chunks, num_chunks);
+            assert_eq!(metadata.requires_response, is_last_chunk);
+
+            // Verify decoded chunk size matches original chunk size
+            assert_eq!(decoded_len, chunk_data.len());
+
+            // Copy decoded chunk to reassembly buffer
+            reassembled[offset..offset + decoded_len].copy_from_slice(&json_bytes[..decoded_len]);
+            offset += decoded_len;
+        }
+
+        // Verify reassembled data matches original
+        assert_eq!(offset, original.len());
+        assert_eq!(&reassembled[..offset], &original[..]);
+
+        std::println!("✓ Multi-chunk reassembly test passed");
+    }
+
+    #[test]
+    fn test_parse_chunk_metadata() {
+        // Test parsing chunk metadata without decoding
+        let json = b"{\"frame\":\"AQID\",\"requires_response\":true,\"chunk_index\":2,\"total_chunks\":5}";
+
+        let metadata = parse_chunk_metadata(json).unwrap();
+
+        assert_eq!(metadata.requires_response, true);
+        assert_eq!(metadata.chunk_index, 2);
+        assert_eq!(metadata.total_chunks, 5);
     }
 
 }
