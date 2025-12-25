@@ -65,65 +65,53 @@ pub fn rle_encode(data: &[u8], output: &mut [u8]) -> usize {
     out_pos
 }
 
-/// RLE decoder that works in-place
+/// RLE decoder - decodes from input to output buffer
 /// Format: [count, byte, count, byte, ...]
 ///
 /// # Arguments
-/// * `buffer` - Buffer containing compressed data at the beginning; will be overwritten with decompressed data
-/// * `compressed_len` - Length of the compressed data
+/// * `input` - Compressed data
+/// * `output` - Output buffer for decompressed data
 ///
 /// # Returns
 /// Number of decompressed bytes
 ///
-/// # Strategy
-/// Moves compressed data to the end of the buffer to avoid overlap during decompression,
-/// then reads from end and writes to beginning
-///
 /// # Example
 /// ```
-/// let mut buffer = [0u8; 100];
-/// buffer[0] = 3;  // count
-/// buffer[1] = 0xFF; // byte
-/// buffer[2] = 2;  // count
-/// buffer[3] = 0x00; // byte
-///
-/// let len = decoding::rle_decode_inplace(&mut buffer, 4);
+/// let compressed = [3, 0xFF, 2, 0x00];
+/// let mut output = [0u8; 100];
+/// let len = decoding::rle_decode(&compressed, &mut output);
 /// assert_eq!(len, 5);
-/// assert_eq!(&buffer[..5], &[0xFF, 0xFF, 0xFF, 0x00, 0x00]);
+/// assert_eq!(&output[..5], &[0xFF, 0xFF, 0xFF, 0x00, 0x00]);
 /// ```
-pub fn rle_decode_inplace(buffer: &mut [u8], compressed_len: usize) -> usize {
-    // Move compressed data to the end to avoid overlap during decompression
-    let src_offset = buffer.len() - compressed_len;
-    buffer.copy_within(0..compressed_len, src_offset);
-
-    let mut read_pos = src_offset;
+pub fn rle_decode(input: &[u8], output: &mut [u8]) -> usize {
+    let mut read_pos = 0;
     let mut write_pos = 0;
 
-    while read_pos < buffer.len() {
-        let count = buffer[read_pos] as usize;
-        let byte = buffer[read_pos + 1];
+    while read_pos + 1 < input.len() {
+        let count = input[read_pos] as usize;
+        let byte = input[read_pos + 1];
 
-        // Write decompressed bytes
         for _ in 0..count {
-            buffer[write_pos] = byte;
-            write_pos += 1;
+            if write_pos < output.len() {
+                output[write_pos] = byte;
+                write_pos += 1;
+            }
         }
-
         read_pos += 2;
     }
 
     write_pos
 }
 
-/// Decode base64 string in-place into a buffer
+/// Decode base64 string into a buffer
 ///
 /// # Arguments
 /// * `base64_str` - Base64 encoded string
 /// * `output` - Output buffer for decoded data
 ///
 /// # Returns
-/// Number of decoded bytes or error message
-pub fn base64_decode_inplace<'a>(
+/// Decoded bytes or error message
+pub fn base64_decode<'a>(
     base64_str: &str,
     output: &'a mut [u8],
 ) -> Result<&'a [u8], &'static str> {
@@ -181,74 +169,53 @@ pub fn parse_chunk_metadata(json_data: &[u8]) -> Result<ChunkMetadata, &'static 
 
 /// Decode a single chunk from JSON payload containing base64-encoded RLE data
 ///
-/// This function performs the decoding pipeline for one chunk:
-/// 1. Parse JSON to extract base64 string and chunk metadata
-/// 2. Decode base64 to RLE compressed data
-/// 3. Decompress RLE data to binary
-///
-/// All operations are done in-place within the provided buffer.
+/// Decodes: JSON → base64 → RLE → raw binary
 ///
 /// # Arguments
-/// * `json_data` - Mutable buffer containing JSON payload; will be overwritten with decompressed chunk data
+/// * `json_data` - Buffer containing JSON payload; will be overwritten with decompressed data
 ///
 /// # Returns
-/// Tuple of (decompressed_chunk_length, chunk_metadata) or error message
-///
-/// # Example
-/// ```no_run
-/// let mut buffer = b"{\"frame\":\"...\",\"requires_response\":true,\"chunk_index\":0,\"total_chunks\":1}".to_vec();
-/// let (len, metadata) = decoding::decode_chunk(&mut buffer)?;
-/// // buffer[..len] now contains the decompressed chunk data
-/// # Ok::<(), &str>(())
-/// ```
+/// Tuple of (decompressed_length, chunk_metadata) or error
 pub fn decode_chunk(json_data: &mut [u8]) -> Result<(usize, ChunkMetadata), &'static str> {
-    // Find the end of the JSON data (look for closing brace followed by zeros or end of buffer)
-    let json_end = json_data
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(json_data.len());
-
-    // Parse JSON to extract base64 string position, chunk metadata
-    let (base64_start, base64_len, metadata) = {
-        let json_slice = &json_data[..json_end];
-        let parsed: BinaryPayload = serde_json_core::from_slice(json_slice)
-            .map_err(|_| "Failed to parse JSON payload")?
+    // Parse JSON and extract metadata + base64 position
+    let json_end = json_data.iter().position(|&b| b == 0).unwrap_or(json_data.len());
+    let (b64_start, b64_len, metadata) = {
+        let parsed: BinaryPayload = serde_json_core::from_slice(&json_data[..json_end])
+            .map_err(|_| "Failed to parse JSON")?
             .0;
 
-        // Calculate the position of base64_frame within json_data
-        let base64_ptr = parsed.frame.as_ptr();
-        let json_ptr = json_data.as_ptr();
-        let offset = unsafe { base64_ptr.offset_from(json_ptr) } as usize;
+        // Calculate base64 string position within buffer
+        let b64_ptr = parsed.frame.as_ptr();
+        let buf_ptr = json_data.as_ptr();
+        let offset = unsafe { b64_ptr.offset_from(buf_ptr) } as usize;
 
-        let metadata = ChunkMetadata {
-            requires_response: parsed.requires_response,
-            chunk_index: parsed.chunk_index,
-            total_chunks: parsed.total_chunks,
-        };
-
-        (offset, parsed.frame.len(), metadata)
+        (
+            offset,
+            parsed.frame.len(),
+            ChunkMetadata {
+                requires_response: parsed.requires_response,
+                chunk_index: parsed.chunk_index,
+                total_chunks: parsed.total_chunks,
+            },
+        )
     };
 
-    // Decode base64 in-place: move base64 string to end, then decode to beginning
-    // This avoids overlap issues during decoding
-    let decoded_len = {
-        // Move base64 data to the end of the buffer to avoid overlap
-        let base64_end_offset = json_data.len() - base64_len;
-        json_data.copy_within(base64_start..base64_start + base64_len, base64_end_offset);
+    // Move base64 to end of buffer to make room for decoding
+    let rle_start = json_data.len() - b64_len;
+    json_data.copy_within(b64_start..b64_start + b64_len, rle_start);
 
-        // Split buffer to avoid borrow conflicts: decode_dst | base64_src
-        let (decode_dst, base64_src) = json_data.split_at_mut(base64_end_offset);
+    // Decode base64 (from end) to RLE data (at beginning)
+    let (rle_dst, b64_src) = json_data.split_at_mut(rle_start);
+    let b64_str = core::str::from_utf8(b64_src).map_err(|_| "Invalid UTF-8")?;
+    let rle_data = Base64::decode(b64_str, rle_dst).map_err(|_| "Failed to decode base64")?;
+    let rle_len = rle_data.len();
 
-        // Convert base64 source to string
-        let base64_str =
-            core::str::from_utf8(base64_src).map_err(|_| "Invalid UTF-8 in base64 data")?;
+    // Move RLE data to end, then decode to beginning
+    let rle_src_start = json_data.len() - rle_len;
+    json_data.copy_within(0..rle_len, rle_src_start);
 
-        // Decode into the destination part (no overlap now)
-        base64_decode_inplace(base64_str, decode_dst)?.len()
-    };
-
-    // RLE decode in-place: read from end, write to beginning
-    let decompressed_len = rle_decode_inplace(json_data, decoded_len);
+    let (output, rle_src) = json_data.split_at_mut(rle_src_start);
+    let decompressed_len = rle_decode(rle_src, output);
 
     Ok((decompressed_len, metadata))
 }
@@ -291,17 +258,14 @@ mod tests {
     }
 
     #[test]
-    fn test_rle_decode_inplace() {
-        let mut buffer = [0u8; 100];
-        buffer[0] = 3;
-        buffer[1] = 0xFF;
-        buffer[2] = 2;
-        buffer[3] = 0x00;
+    fn test_rle_decode() {
+        let compressed = [3, 0xFF, 2, 0x00];
+        let mut output = [0u8; 100];
 
-        let len = rle_decode_inplace(&mut buffer, 4);
+        let len = rle_decode(&compressed, &mut output);
 
         assert_eq!(len, 5);
-        assert_eq!(&buffer[..5], &[0xFF, 0xFF, 0xFF, 0x00, 0x00]);
+        assert_eq!(&output[..5], &[0xFF, 0xFF, 0xFF, 0x00, 0x00]);
     }
 
     #[test]
@@ -313,11 +277,8 @@ mod tests {
         // Encode
         let compressed_len = rle_encode(&original, &mut compressed);
 
-        // Copy to decompression buffer
-        decompressed[..compressed_len].copy_from_slice(&compressed[..compressed_len]);
-
         // Decode
-        let decompressed_len = rle_decode_inplace(&mut decompressed, compressed_len);
+        let decompressed_len = rle_decode(&compressed[..compressed_len], &mut decompressed);
 
         assert_eq!(decompressed_len, original.len());
         assert_eq!(&decompressed[..decompressed_len], &original);
@@ -353,7 +314,7 @@ mod tests {
         let encoded_str = base64_encode(original, &mut encoded).unwrap();
 
         // Decode
-        let decoded_slice = base64_decode_inplace(encoded_str, &mut decoded).unwrap();
+        let decoded_slice = base64_decode(encoded_str, &mut decoded).unwrap();
 
         assert_eq!(decoded_slice, original);
     }
@@ -375,12 +336,11 @@ mod tests {
         let b64_str = base64_encode(&rle_compressed[..rle_len], &mut base64_encoded).unwrap();
 
         // Step 3: Base64 decode
-        let decoded = base64_decode_inplace(b64_str, &mut base64_decoded).unwrap();
+        let decoded = base64_decode(b64_str, &mut base64_decoded).unwrap();
         assert_eq!(decoded.len(), rle_len);
 
         // Step 4: RLE decode
-        rle_decompressed[..decoded.len()].copy_from_slice(decoded);
-        let final_len = rle_decode_inplace(&mut rle_decompressed, decoded.len());
+        let final_len = rle_decode(decoded, &mut rle_decompressed);
 
         assert_eq!(final_len, original.len());
         assert_eq!(&rle_decompressed[..final_len], &original);
