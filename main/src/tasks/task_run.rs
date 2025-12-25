@@ -3,6 +3,8 @@
 use core::ffi::CStr;
 use core::str::FromStr;
 
+use serde::Serialize;
+
 use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::tasks::task_display_handler::{
     DISPLAY_CHANNEL_SIZE, DisplayMessage, queue_qr_display, queue_raw_display, queue_text_display,
@@ -56,6 +58,21 @@ enum DisplayMode {
     QRCode,
     /// Live secure updates via MQTT
     LiveUpdates,
+}
+
+/// MQTT response status
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum MqttResponseStatus {
+    Success,
+    #[allow(unused)]
+    Error,
+}
+
+/// Type-safe MQTT response message
+#[derive(Debug, Clone, Copy, Serialize)]
+struct MqttResponse {
+    response: MqttResponseStatus,
 }
 
 /// Runner for the main wifi processing task
@@ -462,9 +479,7 @@ async fn handle_live_mqtt_updates<'a>(
                         log::info!("Processing raw binary display data chunk");
 
                         // Parse chunk metadata to determine if response is needed
-                        let metadata = if let Ok(meta) =
-                            decoding::parse_chunk_metadata(payload)
-                        {
+                        let metadata = if let Ok(meta) = decoding::parse_chunk_metadata(payload) {
                             log::info!(
                                 "Received chunk {}/{}, requires_response: {}",
                                 meta.chunk_index + 1,
@@ -473,9 +488,7 @@ async fn handle_live_mqtt_updates<'a>(
                             );
                             meta
                         } else {
-                            log::warn!(
-                                "Failed to parse chunk metadata, defaulting to no response"
-                            );
+                            log::warn!("Failed to parse chunk metadata, defaulting to no response");
                             decoding::ChunkMetadata {
                                 requires_response: false,
                                 chunk_index: 0,
@@ -492,11 +505,16 @@ async fn handle_live_mqtt_updates<'a>(
                             log::info!("No response required for this chunk");
                             continue;
                         }
-                        let response_msg = b"{\"response\":\"success\"}";
+                        let response = MqttResponse {
+                            response: MqttResponseStatus::Success,
+                        };
+                        let mut response_buf = [0u8; 32];
+                        let len = serde_json_core::to_slice(&response, &mut response_buf)
+                            .expect("Failed to serialize response");
                         if let Err(e) = client
                             .send_message(
                                 response_topic.as_str(),
-                                response_msg,
+                                &response_buf[..len],
                                 rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
                                 false,
                             )
