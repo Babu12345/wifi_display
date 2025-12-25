@@ -365,12 +365,8 @@ async fn display_qr_code<'a, 'b>(
     Ok(())
 }
 
-/// Update the e-ink display with raw binary data from JSON chunked payload
-/// Expected JSON format: {"frame": "base64_encoded_string", "requires_response": true/false, "chunk_index": 0, "total_chunks": 1}
-/// The base64 data is decoded in-place into the json_data buffer without additional allocations
-/// Strategy: Move base64 string to end of buffer, then decode to beginning (avoids overlap)
-/// The data is RLE compressed: [count, byte, count, byte, ...]
-/// Chunks are reassembled in a static buffer until all chunks are received
+/// Update the e-ink display with raw binary data from JSON payload
+/// Decodes JSON, base64, and RLE compression, then displays the frame
 async fn display_raw_binary<'a>(
     display: &'a mut Display<
         'static,
@@ -383,102 +379,50 @@ async fn display_raw_binary<'a>(
     >,
     json_data: &mut [u8],
 ) -> Result<(), &'static str> {
-    log::info!("Parsing JSON chunk payload: {} bytes", json_data.len());
+    // Decode JSON, base64, and RLE in one step
+    let (chunk_len, metadata) = decoding::decode_chunk(json_data)?;
 
-    // Use the decoding crate to handle JSON parsing, base64 decoding, and RLE decompression
-    let (chunk_len, metadata) = decoding::decode_chunk(json_data).map_err(|e| {
-        log::error!("Chunk decoding error: {}", e);
-        e
-    })?;
-
-    log::info!(
-        "Decoded chunk {}/{}: {} bytes, requires_response: {}",
-        metadata.chunk_index + 1,
-        metadata.total_chunks,
-        chunk_len,
-        metadata.requires_response
-    );
-
-    // Acquire chunk state lock
+    // Acquire chunk state and store decoded data
     let mut chunk_state = CHUNK_STATE.lock().await;
 
-    // Check if this is a new frame (first chunk or reset)
+    // Reset state for new frame
     if metadata.chunk_index == 0 || chunk_state.total_chunks != metadata.total_chunks {
-        log::info!("Starting new frame with {} chunks", metadata.total_chunks);
         chunk_state.reset();
         chunk_state.total_chunks = metadata.total_chunks;
     }
 
-    // Validate chunk index
+    // Validate and check for duplicates
     if metadata.chunk_index >= metadata.total_chunks {
-        log::error!(
-            "Invalid chunk index: {} >= {}",
-            metadata.chunk_index,
-            metadata.total_chunks
-        );
         return Err("Invalid chunk index");
     }
-
-    // Check if we already received this chunk
     if chunk_state.received_chunks[metadata.chunk_index] {
-        log::warn!("Duplicate chunk {} received, ignoring", metadata.chunk_index);
         return Ok(());
     }
 
-    // Calculate chunk offset in the final buffer
-    // For even distribution, we need to know the expected chunk size
-    // Since we're dealing with RLE-compressed data, chunks may vary in size
-    // We'll store chunk offset information or use a simple append strategy
-
-    // For simplicity, let's assume chunks are relatively equal in size
-    let chunk_size_estimate = DISPLAY_SIZE_IN_BYTES / metadata.total_chunks;
-    let offset = metadata.chunk_index * chunk_size_estimate;
-
-    // Copy chunk data to reassembly buffer
-    let copy_len = core::cmp::min(chunk_len, DISPLAY_SIZE_IN_BYTES - offset);
-    if offset + copy_len > DISPLAY_SIZE_IN_BYTES {
-        log::error!(
-            "Chunk data exceeds buffer: offset={}, len={}, buffer={}",
-            offset,
-            copy_len,
-            DISPLAY_SIZE_IN_BYTES
-        );
-        return Err("Chunk data exceeds buffer size");
-    }
-
+    // Copy chunk to reassembly buffer
+    let chunk_size = DISPLAY_SIZE_IN_BYTES / metadata.total_chunks;
+    let offset = metadata.chunk_index * chunk_size;
+    let copy_len = core::cmp::min(chunk_len, DISPLAY_SIZE_IN_BYTES.saturating_sub(offset));
     chunk_state.buffer[offset..offset + copy_len].copy_from_slice(&json_data[..copy_len]);
     chunk_state.received_chunks[metadata.chunk_index] = true;
     chunk_state.received_count += 1;
 
-    log::info!(
-        "Chunk {}/{} received and stored",
-        chunk_state.received_count,
-        chunk_state.total_chunks
-    );
-
-    // Check if all chunks have been received
+    // Wait for remaining chunks
     if !chunk_state.is_complete() {
-        log::info!(
-            "Waiting for more chunks ({}/{})",
-            chunk_state.received_count,
-            chunk_state.total_chunks
-        );
         return Ok(());
     }
 
-    log::info!("All chunks received, displaying frame");
-
-    // All chunks received, display the frame
+    // Display the complete frame
     let mut display_on = display
         .on()
         .await
         .map_err(|_| "Failed to turn on display")?;
 
-    // Create a mutable slice from the chunk buffer
-    let frame_data = &mut chunk_state.buffer[..];
-
     display_on
-        .update_and_save_frame::<FlashStorage>(&mut frame_data.match_size(0x00), true)
+        .update_and_save_frame::<FlashStorage>(
+            &mut chunk_state.buffer[..].match_size(0x00),
+            true,
+        )
         .await
         .map_err(|_| "Failed to update display")?;
 
@@ -487,10 +431,6 @@ async fn display_raw_binary<'a>(
         .await
         .map_err(|_| "Failed to turn off display")?;
 
-    log::info!("Successfully displayed reassembled frame");
-
-    // Reset chunk state for next frame
     chunk_state.reset();
-
     Ok(())
 }
