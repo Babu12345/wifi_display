@@ -153,14 +153,14 @@ pub async fn task_display_handler(
                 }
             }
             DisplayMessage::RawBinary => {
-                let mut buf = UNIFIED_DISPLAY_BUFFER.lock().await;
+                let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
 
                 // Get the actual data length (find first zero or use full buffer)
                 let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
 
                 if len > 0 {
                     log::info!("Processing raw binary data: {} bytes", len);
-                    match display_raw_binary(&mut display, &mut buf[..len]).await {
+                    match display_raw_binary(&mut display, &buf[..len]).await {
                         Ok(_) => log::info!("Successfully displayed raw binary"),
                         Err(e) => log::error!("Error displaying raw binary: {:?}", e),
                     }
@@ -377,12 +377,12 @@ async fn display_raw_binary<'a>(
         EPD417,
         display::OFF,
     >,
-    json_data: &mut [u8],
+    json_data: &[u8],
 ) -> Result<(), &'static str> {
-    // Decode JSON, base64, and RLE in one step
-    let (chunk_len, metadata) = decoding::decode_chunk(json_data)?;
+    // Get metadata first to determine chunk placement
+    let metadata = decoding::parse_chunk_metadata(json_data)?;
 
-    // Acquire chunk state and store decoded data
+    // Acquire chunk state
     let mut chunk_state = CHUNK_STATE.lock().await;
 
     // Reset state for new frame
@@ -399,11 +399,10 @@ async fn display_raw_binary<'a>(
         return Ok(());
     }
 
-    // Copy chunk to reassembly buffer
+    // Decode directly into the correct position in the reassembly buffer
     let chunk_size = DISPLAY_SIZE_IN_BYTES / metadata.total_chunks;
     let offset = metadata.chunk_index * chunk_size;
-    let copy_len = core::cmp::min(chunk_len, DISPLAY_SIZE_IN_BYTES.saturating_sub(offset));
-    chunk_state.buffer[offset..offset + copy_len].copy_from_slice(&json_data[..copy_len]);
+    let (_, _) = decoding::decode_chunk(json_data, &mut chunk_state.buffer[offset..])?;
     chunk_state.received_chunks[metadata.chunk_index] = true;
     chunk_state.received_count += 1;
 

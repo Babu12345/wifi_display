@@ -167,55 +167,37 @@ pub fn parse_chunk_metadata(json_data: &[u8]) -> Result<ChunkMetadata, &'static 
     })
 }
 
-/// Decode a single chunk from JSON payload containing base64-encoded RLE data
-///
-/// Decodes: JSON → base64 → RLE → raw binary
+/// Decode a JSON chunk containing base64-encoded RLE data into an output buffer
 ///
 /// # Arguments
-/// * `json_data` - Buffer containing JSON payload; will be overwritten with decompressed data
+/// * `json_data` - JSON payload bytes
+/// * `output` - Output buffer (must be >= decompressed_size + rle_compressed_size)
 ///
 /// # Returns
 /// Tuple of (decompressed_length, chunk_metadata) or error
-pub fn decode_chunk(json_data: &mut [u8]) -> Result<(usize, ChunkMetadata), &'static str> {
-    // Parse JSON and extract metadata + base64 position
+pub fn decode_chunk(json_data: &[u8], output: &mut [u8]) -> Result<(usize, ChunkMetadata), &'static str> {
+    // Parse JSON
     let json_end = json_data.iter().position(|&b| b == 0).unwrap_or(json_data.len());
-    let (b64_start, b64_len, metadata) = {
-        let parsed: BinaryPayload = serde_json_core::from_slice(&json_data[..json_end])
-            .map_err(|_| "Failed to parse JSON")?
-            .0;
+    let parsed: BinaryPayload = serde_json_core::from_slice(&json_data[..json_end])
+        .map_err(|_| "Failed to parse JSON")?
+        .0;
 
-        // Calculate base64 string position within buffer
-        let b64_ptr = parsed.frame.as_ptr();
-        let buf_ptr = json_data.as_ptr();
-        let offset = unsafe { b64_ptr.offset_from(buf_ptr) } as usize;
-
-        (
-            offset,
-            parsed.frame.len(),
-            ChunkMetadata {
-                requires_response: parsed.requires_response,
-                chunk_index: parsed.chunk_index,
-                total_chunks: parsed.total_chunks,
-            },
-        )
+    let metadata = ChunkMetadata {
+        requires_response: parsed.requires_response,
+        chunk_index: parsed.chunk_index,
+        total_chunks: parsed.total_chunks,
     };
 
-    // Move base64 to end of buffer to make room for decoding
-    let rle_start = json_data.len() - b64_len;
-    json_data.copy_within(b64_start..b64_start + b64_len, rle_start);
+    // Decode base64 to end of output buffer
+    let b64_max_decoded = parsed.frame.len() * 3 / 4 + 4;
+    let rle_start = output.len().saturating_sub(b64_max_decoded);
+    let rle_len = Base64::decode(parsed.frame, &mut output[rle_start..])
+        .map_err(|_| "Failed to decode base64")?
+        .len();
 
-    // Decode base64 (from end) to RLE data (at beginning)
-    let (rle_dst, b64_src) = json_data.split_at_mut(rle_start);
-    let b64_str = core::str::from_utf8(b64_src).map_err(|_| "Invalid UTF-8")?;
-    let rle_data = Base64::decode(b64_str, rle_dst).map_err(|_| "Failed to decode base64")?;
-    let rle_len = rle_data.len();
-
-    // Move RLE data to end, then decode to beginning
-    let rle_src_start = json_data.len() - rle_len;
-    json_data.copy_within(0..rle_len, rle_src_start);
-
-    let (output, rle_src) = json_data.split_at_mut(rle_src_start);
-    let decompressed_len = rle_decode(rle_src, output);
+    // RLE decode: read from end of buffer, write to beginning
+    let (out_dst, rle_src) = output.split_at_mut(rle_start);
+    let decompressed_len = rle_decode(&rle_src[..rle_len], out_dst);
 
     Ok((decompressed_len, metadata))
 }
@@ -363,14 +345,13 @@ mod tests {
 
         // Create JSON payload with chunk metadata
         let json = b"{\"frame\":\"A/8CAA==\",\"requires_response\":true,\"chunk_index\":0,\"total_chunks\":1}";
-        let mut json_bytes = vec![0u8; json.len() + 100]; // Extra space for decompression
-        json_bytes[..json.len()].copy_from_slice(json);
+        let mut output = [0u8; 100];
 
         // Decode
-        let (len, metadata) = decode_chunk(&mut json_bytes).unwrap();
+        let (len, metadata) = decode_chunk(json, &mut output).unwrap();
 
         assert_eq!(len, original.len());
-        assert_eq!(&json_bytes[..len], &original);
+        assert_eq!(&output[..len], &original);
         assert_eq!(metadata.requires_response, true);
         assert_eq!(metadata.chunk_index, 0);
         assert_eq!(metadata.total_chunks, 1);
@@ -393,15 +374,13 @@ mod tests {
 
         // Create JSON payload with chunk metadata
         let json_string = std::format!(r#"{{"frame":"{}","requires_response":false,"chunk_index":0,"total_chunks":1}}"#, b64_str);
-        let json = json_string.as_bytes();
-        let mut json_bytes = vec![0u8; json.len() + 3000];
-        json_bytes[..json.len()].copy_from_slice(json);
+        let mut output = vec![0u8; 2000];
 
         // Decode
-        let (len, metadata) = decode_chunk(&mut json_bytes).unwrap();
+        let (len, metadata) = decode_chunk(json_string.as_bytes(), &mut output).unwrap();
 
         assert_eq!(len, original.len());
-        assert_eq!(&json_bytes[..len], &original[..]);
+        assert_eq!(&output[..len], &original[..]);
         assert_eq!(metadata.requires_response, false);
         assert_eq!(metadata.chunk_index, 0);
         assert_eq!(metadata.total_chunks, 1);
@@ -409,18 +388,17 @@ mod tests {
 
     #[test]
     fn test_decode_chunk_invalid_json() {
-        let mut json_bytes = b"{invalid json}".to_vec();
-        let result = decode_chunk(&mut json_bytes);
+        let json = b"{invalid json}";
+        let mut output = [0u8; 100];
+        let result = decode_chunk(json, &mut output);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_decode_chunk_invalid_base64() {
         let json = b"{\"frame\":\"!!!invalid_base64!!!\",\"requires_response\":true,\"chunk_index\":0,\"total_chunks\":1}";
-        let mut json_bytes = vec![0u8; 500];
-        json_bytes[..json.len()].copy_from_slice(json);
-
-        let result = decode_chunk(&mut json_bytes);
+        let mut output = [0u8; 500];
+        let result = decode_chunk(json, &mut output);
         assert!(result.is_err());
     }
 
@@ -530,30 +508,20 @@ mod tests {
         let json_string = std::format!(r#"{{"frame":"{}","requires_response":true,"chunk_index":0,"total_chunks":1}}"#, b64_str);
         std::println!("JSON payload size: {} bytes", json_string.len());
 
-        // Allocate buffer with extra space for in-place decoding
-        let mut json_bytes = vec![0u8; json_string.len() + DISPLAY_SIZE + 1000];
-        json_bytes[..json_string.len()].copy_from_slice(json_string.as_bytes());
-
-        // Step 4: Decode using the full pipeline (simulates real-world usage)
+        // Step 4: Decode using the full pipeline
+        // Buffer must be large enough for: decompressed_size + rle_compressed_size + padding
+        let mut output = vec![0u8; DISPLAY_SIZE + rle_len + 8];
         let (decompressed_len, metadata) =
-            decode_chunk(&mut json_bytes).expect("Decoding should succeed");
+            decode_chunk(json_string.as_bytes(), &mut output).expect("Decoding should succeed");
 
         std::println!("Decompressed size: {} bytes", decompressed_len);
 
         // Step 5: Verify results
-        assert_eq!(
-            decompressed_len, DISPLAY_SIZE,
-            "Decompressed data should be {} bytes",
-            DISPLAY_SIZE
-        );
-        assert_eq!(metadata.requires_response, true, "requires_response should be true");
+        assert_eq!(decompressed_len, DISPLAY_SIZE);
+        assert_eq!(metadata.requires_response, true);
         assert_eq!(metadata.chunk_index, 0);
         assert_eq!(metadata.total_chunks, 1);
-        assert_eq!(
-            &json_bytes[..decompressed_len],
-            &original[..],
-            "Decompressed data should match original exactly"
-        );
+        assert_eq!(&output[..decompressed_len], &original[..]);
 
         std::println!(
             "✓ E2E test passed: 15KB → {}KB (compressed) → 15KB (decompressed)",
@@ -771,10 +739,8 @@ mod tests {
             );
 
             // Decode chunk
-            let mut json_bytes = vec![0u8; json_string.len() + 2000];
-            json_bytes[..json_string.len()].copy_from_slice(json_string.as_bytes());
-
-            let (decoded_len, metadata) = decode_chunk(&mut json_bytes).unwrap();
+            let mut output = vec![0u8; 2000];
+            let (decoded_len, metadata) = decode_chunk(json_string.as_bytes(), &mut output).unwrap();
 
             // Verify metadata
             assert_eq!(metadata.chunk_index, chunk_idx);
@@ -785,7 +751,7 @@ mod tests {
             assert_eq!(decoded_len, chunk_data.len());
 
             // Copy decoded chunk to reassembly buffer
-            reassembled[offset..offset + decoded_len].copy_from_slice(&json_bytes[..decoded_len]);
+            reassembled[offset..offset + decoded_len].copy_from_slice(&output[..decoded_len]);
             offset += decoded_len;
         }
 
