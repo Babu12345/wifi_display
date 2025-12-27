@@ -81,7 +81,7 @@ struct MqttResponse {
 /// - LiveUpdates: Receives display frames via MQTT over TLS
 /// - CustomText: Displays text stored via NFC (offline mode)
 /// - QRCode: Displays QR codes from URLs stored via NFC (offline mode)
-#[embassy_executor::task(pool_size = 1)]
+#[embassy_executor::task]
 pub async fn task_run(
     stack: Stack<'static>,
     rng_ref: &'static RefCell<Trng<'static>>,
