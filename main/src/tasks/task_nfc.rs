@@ -1,4 +1,4 @@
-//! NFC controller task
+//! NFC tag monitoring and data processing
 
 use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::NotificationType;
@@ -12,8 +12,15 @@ use esp_hal::{
 use esp_storage::FlashStorage;
 use nfc::{MAX_NFCDATA_SIZE, Nfc, STM25DV64KC};
 use storage::storage::PersistentStorage;
+
+/// Monitors NFC tag for new data and persists it to flash storage
+///
+/// Watches for RF writes to the NFC tag and parses NDEF records containing:
+/// - WiFi credentials
+/// - Display text
+/// - URLs for QR codes
+/// - Live update commands
 #[embassy_executor::task]
-/// Handles NFC processing
 pub async fn task_nfc(
     mut nfc: Nfc<STM25DV64KC, Input<'static>, Output<'static>, I2c<'static, Async>>,
     notification: Sender<'static, NoopRawMutex, NotificationType, NUM_NOTIFICATION_RECEIVERS>,

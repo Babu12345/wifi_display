@@ -89,8 +89,12 @@ static UNIFIED_DISPLAY_BUFFER: Mutex<CriticalSectionRawMutex, [u8; RAW_DISPLAY_B
 static CHUNK_STATE: Mutex<CriticalSectionRawMutex, ChunkState> =
     Mutex::new(ChunkState::new());
 
-/// Display handler task that processes display messages from a channel
-/// This allows rate-limiting display updates without blocking data input
+/// Processes display update requests from a channel and renders to the e-ink display
+///
+/// Supports three message types:
+/// - Text: Renders text with configurable font size and alignment
+/// - QRCode: Generates and displays QR codes from URLs
+/// - RawBinary: Decodes and displays raw frame data (base64 + RLE compressed)
 #[embassy_executor::task]
 pub async fn task_display_handler(
     mut display: Display<

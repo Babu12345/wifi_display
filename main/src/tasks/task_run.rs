@@ -75,8 +75,12 @@ struct MqttResponse {
     response: MqttResponseStatus,
 }
 
-/// Runner for the main wifi processing task
-/// Stack size increased to accommodate MQTT buffers (2x 16KB) on stack
+/// Main application task - manages WiFi connection, MQTT communication, and display modes
+///
+/// Handles three display modes:
+/// - LiveUpdates: Receives display frames via MQTT over TLS
+/// - CustomText: Displays text stored via NFC (offline mode)
+/// - QRCode: Displays QR codes from URLs stored via NFC (offline mode)
 #[embassy_executor::task(pool_size = 1)]
 pub async fn task_run(
     stack: Stack<'static>,
