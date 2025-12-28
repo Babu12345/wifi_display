@@ -63,6 +63,7 @@ pub async fn task_display_handler(
         let message = channel.receive().await;
         log::info!("Display task received message: {:?}", message);
 
+        indicator.toggle();
         // Process the message
         match message {
             DisplayMessage::Text => {
@@ -107,7 +108,6 @@ pub async fn task_display_handler(
                 let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
 
                 log::info!("Displaying complete frame: {} bytes", DISPLAY_SIZE_IN_BYTES);
-                indicator.toggle();
                 match display_raw_binary(&mut display, &buf[..]).await {
                     Ok(_) => log::info!("Successfully displayed raw binary"),
                     Err(e) => log::error!("Error displaying raw binary: {:?}", e),
@@ -115,6 +115,7 @@ pub async fn task_display_handler(
                 indicator.toggle();
             }
         }
+        indicator.toggle();
 
         // Rate limit: wait before allowing next display update
         Timer::after(Duration::from_millis(DISPLAY_UPDATE_DELAY_MS)).await;
