@@ -1,9 +1,6 @@
 //! Display handler task for rate-limited display updates
 
-use crate::{
-    spi::SpiV2,
-    tasks::{MatchSliceLengths, task_run::MQTT_BUFFER_SIZE},
-};
+use crate::{spi::SpiV2, tasks::MatchSliceLengths};
 use display::{Display, EPD417, EPD417_SIZE};
 use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
@@ -13,7 +10,6 @@ use embassy_sync::{
 use embassy_time::{Duration, Timer};
 use esp_hal::{Async, gpio::Output};
 use esp_storage::FlashStorage;
-use nfc::MAX_NFCDATA_SIZE;
 use text::{Alignment, FontSize, Text};
 
 /// Size of the display message channel
@@ -26,15 +22,6 @@ const DISPLAY_HEIGHT: u32 = 300;
 
 const DISPLAY_SIZE_IN_BYTES: usize = (DISPLAY_WIDTH * DISPLAY_HEIGHT / 8) as usize; // 15,000 bytes
 
-// Buffer size for raw binary display data
-const UNIFIED_DISPLAY_BUFFER_SIZE: usize = MQTT_BUFFER_SIZE;
-
-// Compile-time assertion:
-const _: () = assert!(
-    UNIFIED_DISPLAY_BUFFER_SIZE >= MQTT_BUFFER_SIZE
-        && UNIFIED_DISPLAY_BUFFER_SIZE >= MAX_NFCDATA_SIZE,
-    "UNIFIED_DISPLAY_BUFFER_SIZE must be large enough to transmit MQTT data and NFC data"
-);
 /// Messages that can be sent to the display task
 #[derive(Debug, Clone, Copy)]
 pub enum DisplayMessage {
@@ -42,52 +29,14 @@ pub enum DisplayMessage {
     Text,
     /// Display a QR code from URL (via NFC)
     QRCode,
-    /// Display raw binary data (via MQTT)
+    /// Display raw binary data (complete frame from MQTT)
     RawBinary,
 }
 
-/// Chunk reassembly state for multi-chunk frame data
-/// Accumulates raw frame bytes until all chunks received
-#[derive(Debug)]
-struct ChunkState {
-    /// Buffer for assembling frame chunks
-    buffer: [u8; DISPLAY_SIZE_IN_BYTES],
-    /// Expected total number of chunks
-    total_chunks: usize,
-    /// Number of chunks received so far
-    received_count: usize,
-    /// Current write offset in buffer
-    offset: usize,
-}
-
-impl ChunkState {
-    const fn new() -> Self {
-        Self {
-            buffer: [0; DISPLAY_SIZE_IN_BYTES],
-            total_chunks: 0,
-            received_count: 0,
-            offset: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.buffer.fill(0);
-        self.total_chunks = 0;
-        self.received_count = 0;
-        self.offset = 0;
-    }
-
-    fn is_complete(&self) -> bool {
-        self.received_count > 0 && self.received_count == self.total_chunks
-    }
-}
-
 // Static buffer to transmit display data from the different tasks protected by a Mutex
-static UNIFIED_DISPLAY_BUFFER: Mutex<CriticalSectionRawMutex, [u8; UNIFIED_DISPLAY_BUFFER_SIZE]> =
-    Mutex::new([0; UNIFIED_DISPLAY_BUFFER_SIZE]);
-
-// Chunk reassembly state for raw binary data
-static CHUNK_STATE: Mutex<CriticalSectionRawMutex, ChunkState> = Mutex::new(ChunkState::new());
+// Sized to hold a complete display frame (15,000 bytes)
+static UNIFIED_DISPLAY_BUFFER: Mutex<CriticalSectionRawMutex, [u8; DISPLAY_SIZE_IN_BYTES]> =
+    Mutex::new([0; DISPLAY_SIZE_IN_BYTES]);
 
 /// Processes display update requests from a channel and renders to the e-ink display
 ///
@@ -157,20 +106,13 @@ pub async fn task_display_handler(
             DisplayMessage::RawBinary => {
                 let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
 
-                // Get the actual data length (find first zero or use full buffer)
-                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-
-                if len > 0 {
-                    log::info!("Processing raw binary data: {} bytes", len);
-                    indicator.toggle();
-                    match display_raw_binary(&mut display, &buf[..len]).await {
-                        Ok(_) => log::info!("Successfully displayed raw binary"),
-                        Err(e) => log::error!("Error displaying raw binary: {:?}", e),
-                    }
-                    indicator.toggle();
-                } else {
-                    log::warn!("Empty raw binary buffer, skipping display");
+                log::info!("Displaying complete frame: {} bytes", DISPLAY_SIZE_IN_BYTES);
+                indicator.toggle();
+                match display_raw_binary(&mut display, &buf[..]).await {
+                    Ok(_) => log::info!("Successfully displayed raw binary"),
+                    Err(e) => log::error!("Error displaying raw binary: {:?}", e),
                 }
+                indicator.toggle();
             }
         }
 
@@ -223,32 +165,35 @@ pub fn queue_qr_display(
     }
 }
 
-/// Store raw binary data in the display task's buffer and send message to display it (via MQTT)
-pub fn queue_raw_display(
-    channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
-    data: &[u8],
-) {
+/// Append chunk data directly to the display buffer at the given offset
+/// Returns the number of bytes written, or None if buffer is locked
+pub fn append_to_display_buffer(data: &[u8], offset: usize) -> Option<usize> {
     if let Ok(mut buf) = UNIFIED_DISPLAY_BUFFER.try_lock() {
-        // Use full buffer for raw binary data
-        buf.fill(0);
-        let len = core::cmp::min(data.len(), buf.len());
-        buf[..len].copy_from_slice(&data[..len]);
-
-        if data.len() > buf.len() {
-            log::warn!(
-                "Raw display data truncated: {} bytes received, {} bytes buffer",
-                data.len(),
-                buf.len()
-            );
+        let available = buf.len().saturating_sub(offset);
+        let copy_len = core::cmp::min(data.len(), available);
+        if copy_len > 0 {
+            buf[offset..offset + copy_len].copy_from_slice(&data[..copy_len]);
         }
+        Some(copy_len)
     } else {
-        log::warn!("Display buffer locked, skipping update");
-        return;
+        log::warn!("Display buffer locked");
+        None
     }
+}
 
-    // Try to send, drop oldest message if channel is full
+/// Reset the display buffer (call when starting a new frame)
+pub fn reset_display_buffer() {
+    if let Ok(mut buf) = UNIFIED_DISPLAY_BUFFER.try_lock() {
+        buf.fill(0);
+    }
+}
+
+/// Signal that the complete frame is ready for display
+pub fn queue_frame_ready(
+    channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
+) {
     if channel.try_send(DisplayMessage::RawBinary).is_err() {
-        log::warn!("Display channel full, message may be dropped");
+        log::warn!("Display channel full, frame may be dropped");
     }
 }
 
@@ -367,9 +312,7 @@ async fn display_qr_code<'a, 'b>(
     Ok(())
 }
 
-/// Update the e-ink display with raw binary data from JSON payload
-/// Chunks contain base64-encoded pieces of raw frame data.
-/// Accumulates frame bytes across chunks, then displays once complete.
+/// Update the e-ink display with complete raw frame data
 async fn display_raw_binary<'a>(
     display: &'a mut Display<
         'static,
@@ -380,54 +323,17 @@ async fn display_raw_binary<'a>(
         EPD417,
         display::OFF,
     >,
-    json_data: &[u8],
+    frame_data: &[u8],
 ) -> Result<(), &'static str> {
-    // Get metadata first
-    let metadata = decoding::parse_chunk_metadata(json_data)?;
+    log::info!("Rendering frame to display");
 
-    // Acquire chunk state
-    let mut chunk_state = CHUNK_STATE.lock().await;
-
-    // Reset state for new frame (chunk 0 starts a new frame)
-    if metadata.chunk_index == 0 {
-        chunk_state.reset();
-        chunk_state.total_chunks = metadata.total_chunks;
-    }
-
-    // Validate chunk index
-    if metadata.chunk_index >= metadata.total_chunks {
-        return Err("Invalid chunk index");
-    }
-
-    // Base64 decode directly into local buffer
-    let mut decode_buf = [0u8; MQTT_BUFFER_SIZE];
-    let (decoded_len, _) = decoding::decode_chunk(json_data, &mut decode_buf)?;
-
-    // Append decoded frame data to chunk state buffer
-    let offset = chunk_state.offset;
-    let copy_len = decoded_len.min(DISPLAY_SIZE_IN_BYTES.saturating_sub(offset));
-    chunk_state.buffer[offset..offset + copy_len].copy_from_slice(&decode_buf[..copy_len]);
-    chunk_state.offset += copy_len;
-    chunk_state.received_count += 1;
-
-    // Wait for remaining chunks
-    if !chunk_state.is_complete() {
-        return Ok(());
-    }
-
-    log::info!(
-        "All chunks received. Displaying {} bytes",
-        chunk_state.offset
-    );
-
-    // Display the complete frame
     let mut display_on = display
         .on()
         .await
         .map_err(|_| "Failed to turn on display")?;
 
     display_on
-        .update_and_save_frame::<FlashStorage>(&mut chunk_state.buffer[..].match_size(0x00), true)
+        .update_and_save_frame::<FlashStorage>(&mut frame_data.match_size(0x00), true)
         .await
         .map_err(|_| "Failed to update display")?;
 
@@ -436,6 +342,5 @@ async fn display_raw_binary<'a>(
         .await
         .map_err(|_| "Failed to turn off display")?;
 
-    chunk_state.reset();
     Ok(())
 }

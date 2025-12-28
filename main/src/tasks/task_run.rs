@@ -7,7 +7,8 @@ use serde::Serialize;
 
 use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::tasks::task_display_handler::{
-    DISPLAY_CHANNEL_SIZE, DisplayMessage, queue_qr_display, queue_raw_display, queue_text_display,
+    DISPLAY_CHANNEL_SIZE, DisplayMessage, append_to_display_buffer, queue_frame_ready,
+    queue_qr_display, queue_text_display, reset_display_buffer,
 };
 use crate::{AsyncStack, NotificationType};
 use embassy_futures::select::{Either3, select3};
@@ -48,6 +49,35 @@ static MQTT_TCP_RX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]
     Mutex::new([0u8; MQTT_BUFFER_SIZE]);
 static MQTT_TCP_TX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
     Mutex::new([0u8; MQTT_BUFFER_SIZE]);
+
+/// Chunk reassembly metadata (no buffer - uses display buffer directly)
+struct ChunkMeta {
+    total_chunks: usize,
+    received_count: usize,
+    offset: usize,
+}
+
+impl ChunkMeta {
+    const fn new() -> Self {
+        Self {
+            total_chunks: 0,
+            received_count: 0,
+            offset: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.total_chunks = 0;
+        self.received_count = 0;
+        self.offset = 0;
+    }
+
+    fn is_complete(&self) -> bool {
+        self.received_count > 0 && self.received_count == self.total_chunks
+    }
+}
+
+static CHUNK_META: Mutex<CriticalSectionRawMutex, ChunkMeta> = Mutex::new(ChunkMeta::new());
 
 /// Display mode for the main task
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -479,54 +509,80 @@ async fn handle_live_mqtt_updates<'a>(
 
                 match topic {
                     topic if topic == raw_topic.as_str() => {
-                        // Handle raw binary display data chunk
-                        log::info!("Processing raw binary display data chunk");
-
-                        // Parse chunk metadata to determine if response is needed
-                        let metadata = if let Ok(meta) = decoding::parse_chunk_metadata(payload) {
-                            log::info!(
-                                "Received chunk {}/{}, requires_response: {}",
-                                meta.chunk_index + 1,
-                                meta.total_chunks,
-                                meta.requires_response
-                            );
-                            meta
-                        } else {
-                            log::warn!("Failed to parse chunk metadata, defaulting to no response");
-                            decoding::ChunkMetadata {
-                                requires_response: false,
-                                chunk_index: 0,
-                                total_chunks: 1,
+                        // Parse chunk metadata
+                        let metadata = match decoding::parse_chunk_metadata(payload) {
+                            Ok(meta) => meta,
+                            Err(e) => {
+                                log::error!("Failed to parse chunk metadata: {}", e);
+                                continue;
                             }
                         };
 
-                        // Queue the chunk data for display
-                        queue_raw_display(display_channel, payload);
-                        log::info!("Chunk {} queued successfully", metadata.chunk_index);
-
-                        // Send response only if required (typically for the last chunk)
-                        if !metadata.requires_response {
-                            log::info!("No response required for this chunk");
-                            continue;
-                        }
-                        let response = MqttResponse {
-                            response: MqttResponseStatus::Success,
-                        };
-                        let mut response_buf = [0u8; 32];
-                        let len = serde_json_core::to_slice(&response, &mut response_buf)
-                            .expect("Failed to serialize response");
-                        if let Err(e) = client
-                            .send_message(
-                                response_topic.as_str(),
-                                &response_buf[..len],
-                                rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
-                                false,
-                            )
-                            .await
+                        // Decode chunk data into stack buffer
+                        let mut decode_buf = [0u8; MQTT_BUFFER_SIZE];
+                        let (decoded_len, _) = match decoding::decode_chunk(payload, &mut decode_buf)
                         {
-                            log::warn!("Failed to publish response: {:?}", e);
-                        } else {
-                            log::info!("Published success response to {}", response_topic.as_str());
+                            Ok(result) => result,
+                            Err(e) => {
+                                log::error!("Failed to decode chunk: {}", e);
+                                continue;
+                            }
+                        };
+
+                        // Update chunk metadata
+                        let mut chunk_meta = CHUNK_META.lock().await;
+                        if metadata.chunk_index == 0 {
+                            reset_display_buffer();
+                            chunk_meta.reset();
+                            chunk_meta.total_chunks = metadata.total_chunks;
+                        }
+
+                        // Write decoded data directly to display buffer
+                        if let Some(written) =
+                            append_to_display_buffer(&decode_buf[..decoded_len], chunk_meta.offset)
+                        {
+                            chunk_meta.offset += written;
+                            chunk_meta.received_count += 1;
+
+                            log::info!(
+                                "Chunk {}/{}: {} bytes (total: {} bytes)",
+                                metadata.chunk_index + 1,
+                                metadata.total_chunks,
+                                decoded_len,
+                                chunk_meta.offset
+                            );
+                        }
+
+                        // Send ACK if required
+                        if metadata.requires_response {
+                            let response = MqttResponse {
+                                response: MqttResponseStatus::Success,
+                            };
+                            let mut response_buf = [0u8; 32];
+                            let len = serde_json_core::to_slice(&response, &mut response_buf)
+                                .expect("Failed to serialize response");
+                            if let Err(e) = client
+                                .send_message(
+                                    response_topic.as_str(),
+                                    &response_buf[..len],
+                                    rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
+                                    false,
+                                )
+                                .await
+                            {
+                                log::warn!("Failed to publish ACK: {:?}", e);
+                            }
+                        }
+
+                        // When all chunks received, signal display task
+                        if chunk_meta.is_complete() {
+                            log::info!(
+                                "All {} chunks received. Queuing {} bytes for display",
+                                chunk_meta.total_chunks,
+                                chunk_meta.offset
+                            );
+                            queue_frame_ready(display_channel);
+                            chunk_meta.reset();
                         }
                     }
                     _ => log::warn!("Received message on unexpected topic: {}", topic),
