@@ -1,6 +1,9 @@
 //! Display handler task for rate-limited display updates
 
-use crate::{spi::SpiV2, tasks::MatchSliceLengths};
+use crate::{
+    spi::SpiV2,
+    tasks::{MatchSliceLengths, task_run::MQTT_BUFFER_SIZE},
+};
 use display::{Display, EPD417, EPD417_SIZE};
 use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
@@ -10,6 +13,7 @@ use embassy_sync::{
 use embassy_time::{Duration, Timer};
 use esp_hal::{Async, gpio::Output};
 use esp_storage::FlashStorage;
+use nfc::MAX_NFCDATA_SIZE;
 use text::{Alignment, FontSize, Text};
 
 /// Size of the display message channel
@@ -23,16 +27,14 @@ const DISPLAY_HEIGHT: u32 = 300;
 const DISPLAY_SIZE_IN_BYTES: usize = (DISPLAY_WIDTH * DISPLAY_HEIGHT / 8) as usize; // 15,000 bytes
 
 // Buffer size for raw binary display data
-// Must be >= DISPLAY_SIZE_IN_BYTES to hold decompressed frame after in-place decoding
-// The JSON payload (~3KB compressed) expands to DISPLAY_SIZE_IN_BYTES (15KB) during decoding
-const RAW_DISPLAY_BUFFER_SIZE: usize = DISPLAY_SIZE_IN_BYTES + 360; // 15KB + 360 bytes safety margin
+const UNIFIED_DISPLAY_BUFFER_SIZE: usize = MQTT_BUFFER_SIZE;
 
-// Compile-time assertion: Buffer must be large enough for decompressed display data
+// Compile-time assertion:
 const _: () = assert!(
-    RAW_DISPLAY_BUFFER_SIZE >= DISPLAY_SIZE_IN_BYTES,
-    "RAW_DISPLAY_BUFFER_SIZE must be >= DISPLAY_SIZE_IN_BYTES for in-place decoding"
+    UNIFIED_DISPLAY_BUFFER_SIZE >= MQTT_BUFFER_SIZE
+        && UNIFIED_DISPLAY_BUFFER_SIZE >= MAX_NFCDATA_SIZE,
+    "UNIFIED_DISPLAY_BUFFER_SIZE must be large enough to transmit MQTT data and NFC data"
 );
-
 /// Messages that can be sent to the display task
 #[derive(Debug, Clone, Copy)]
 pub enum DisplayMessage {
@@ -78,16 +80,12 @@ impl ChunkState {
     }
 }
 
-// Static buffer for all display data protected by mutex
-// OPTIMIZATION: Single unified buffer for all display types since messages are processed sequentially
-// - Text/URL use first DISPLAY_TEXT_BUFFER_LENGTH bytes (512)
-// - Raw binary uses full RAW_DISPLAY_BUFFER_SIZE bytes (15,360)
-static UNIFIED_DISPLAY_BUFFER: Mutex<CriticalSectionRawMutex, [u8; RAW_DISPLAY_BUFFER_SIZE]> =
-    Mutex::new([0; RAW_DISPLAY_BUFFER_SIZE]);
+// Static buffer to transmit display data from the different tasks protected by a Mutex
+static UNIFIED_DISPLAY_BUFFER: Mutex<CriticalSectionRawMutex, [u8; UNIFIED_DISPLAY_BUFFER_SIZE]> =
+    Mutex::new([0; UNIFIED_DISPLAY_BUFFER_SIZE]);
 
 // Chunk reassembly state for raw binary data
-static CHUNK_STATE: Mutex<CriticalSectionRawMutex, ChunkState> =
-    Mutex::new(ChunkState::new());
+static CHUNK_STATE: Mutex<CriticalSectionRawMutex, ChunkState> = Mutex::new(ChunkState::new());
 
 /// Processes display update requests from a channel and renders to the e-ink display
 ///
@@ -422,10 +420,7 @@ async fn display_raw_binary<'a>(
         .map_err(|_| "Failed to turn on display")?;
 
     display_on
-        .update_and_save_frame::<FlashStorage>(
-            &mut chunk_state.buffer[..].match_size(0x00),
-            true,
-        )
+        .update_and_save_frame::<FlashStorage>(&mut chunk_state.buffer[..].match_size(0x00), true)
         .await
         .map_err(|_| "Failed to update display")?;
 

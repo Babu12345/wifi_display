@@ -30,14 +30,14 @@ pub const DEFAULT_SSID: &str = "HONESTWIFI-2325-2G";
 pub const DEFAULT_PASSWORD: &str = "9526070855!";
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
-const DISPLAY_TEXT_BUFFER_LENGTH: usize = 512;
 
 const MQTT_BROKER_CSTR: &CStr = c"avbh2adibwzla-ats.iot.us-east-2.amazonaws.com";
 const MQTT_PORT: u16 = 8883; // TLS port
 // Client ID: Update this 6-character alphanumeric code for each board
 const MQTT_CLIENT_ID: &str = "client1";
 const MQTT_TIMEOUT_SECS: u16 = 120;
-const MQTT_BUFFER_SIZE: usize = 15384;
+/// Max size in bytes of the data being sent via AWS
+pub const MQTT_BUFFER_SIZE: usize = 7_000;
 
 // Static buffers for MQTT to avoid stack overflow
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
@@ -234,7 +234,7 @@ pub async fn task_run(
             }
             Err(e) => {
                 log::error!("Failed to connect to WiFi with error: {e:?}");
-                if let Ok(text) = String::<DISPLAY_TEXT_BUFFER_LENGTH>::from_str(
+                if let Ok(text) = String::<512>::from_str(
                     "WiFi Connection\nFailed\n-------------------\nPlease tap with\nNFC to update",
                 ) && previously_connected
                 {
@@ -570,7 +570,7 @@ fn load_wifi_credentials(
 /// Load display text from storage
 fn load_display_text(
     storage: &mut PersistentStorage<FlashStorage>,
-) -> Result<String<DISPLAY_TEXT_BUFFER_LENGTH>, &'static str> {
+) -> Result<String<MAX_NFCDATA_SIZE>, &'static str> {
     let data = storage
         .read(storage::storage::StorageContents::DisplayText)
         .map_err(|_| "Failed to read display text from storage")?;
@@ -587,7 +587,7 @@ fn load_display_text(
 /// Load display URL from storage
 fn load_display_url(
     storage: &mut PersistentStorage<FlashStorage>,
-) -> Result<String<DISPLAY_TEXT_BUFFER_LENGTH>, &'static str> {
+) -> Result<String<MAX_NFCDATA_SIZE>, &'static str> {
     let data = storage
         .read(storage::storage::StorageContents::DisplayURL)
         .map_err(|_| "Failed to read display URL from storage")?;
