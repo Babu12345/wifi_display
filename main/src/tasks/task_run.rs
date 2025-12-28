@@ -161,6 +161,11 @@ struct ConfigPayload<'a> {
     unsubscribe: Option<&'a str>,
 }
 
+/// Check if a topic is a reserved core topic that cannot be dynamically subscribed/unsubscribed
+fn is_reserved_topic(topic: &str, raw_topic: &str, config_topic: &str) -> bool {
+    topic == raw_topic || topic == config_topic
+}
+
 /// Main application task - manages WiFi connection, MQTT communication, and display modes
 ///
 /// Handles three display modes:
@@ -644,7 +649,19 @@ async fn handle_live_mqtt_updates<'a>(
                             Ok((config, _)) => {
                                 // Queue subscribe request (applied at start of next loop)
                                 if let Some(new_topic) = config.subscribe {
-                                    if dynamic_topics.iter().any(|dt| dt.as_str() == new_topic) {
+                                    if is_reserved_topic(
+                                        new_topic,
+                                        raw_topic.as_str(),
+                                        config_topic.as_str(),
+                                    ) {
+                                        log::warn!(
+                                            "Cannot subscribe to reserved topic: {}",
+                                            new_topic
+                                        );
+                                    } else if dynamic_topics
+                                        .iter()
+                                        .any(|dt| dt.as_str() == new_topic)
+                                    {
                                         log::info!("Already subscribed to: {}", new_topic);
                                     } else if dynamic_topics.len() >= MAX_DYNAMIC_TOPICS {
                                         log::warn!(
@@ -660,7 +677,19 @@ async fn handle_live_mqtt_updates<'a>(
 
                                 // Queue unsubscribe request (applied at start of next loop)
                                 if let Some(remove_topic) = config.unsubscribe {
-                                    if dynamic_topics.iter().any(|dt| dt.as_str() == remove_topic) {
+                                    if is_reserved_topic(
+                                        remove_topic,
+                                        raw_topic.as_str(),
+                                        config_topic.as_str(),
+                                    ) {
+                                        log::warn!(
+                                            "Cannot unsubscribe from reserved topic: {}",
+                                            remove_topic
+                                        );
+                                    } else if dynamic_topics
+                                        .iter()
+                                        .any(|dt| dt.as_str() == remove_topic)
+                                    {
                                         if let Ok(topic_str) = String::<64>::try_from(remove_topic)
                                         {
                                             log::info!(
