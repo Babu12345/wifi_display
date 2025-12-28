@@ -147,6 +147,20 @@ struct MqttResponse {
     response: MqttResponseStatus,
 }
 
+/// Maximum number of dynamic topic subscriptions
+const MAX_DYNAMIC_TOPICS: usize = 4;
+
+/// Config payload for subscribing to additional topics
+#[derive(Debug, serde::Deserialize)]
+struct ConfigPayload<'a> {
+    /// Topic to subscribe to (e.g., "mta/updates", "stocks/AAPL")
+    #[serde(borrow)]
+    subscribe: Option<&'a str>,
+    /// Topic to unsubscribe from
+    #[serde(borrow)]
+    unsubscribe: Option<&'a str>,
+}
+
 /// Main application task - manages WiFi connection, MQTT communication, and display modes
 ///
 /// Handles three display modes:
@@ -505,12 +519,26 @@ async fn handle_live_mqtt_updates<'a>(
     core::fmt::write(&mut raw_topic, format_args!("{}/root/raw", MQTT_CLIENT_ID))
         .map_err(|_| "Failed to format raw topic")?;
 
+    let mut config_topic = String::<64>::new();
+    core::fmt::write(
+        &mut config_topic,
+        format_args!("{}/root/config", MQTT_CLIENT_ID),
+    )
+    .map_err(|_| "Failed to format config topic")?;
+
     let mut response_topic = String::<64>::new();
     core::fmt::write(
         &mut response_topic,
         format_args!("{}/root/response", MQTT_CLIENT_ID),
     )
     .map_err(|_| "Failed to format response topic")?;
+
+    // Track dynamically subscribed topics
+    let mut dynamic_topics: heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS> = heapless::Vec::new();
+
+    // Pending subscription changes (applied at start of loop)
+    let mut pending_subscribe: Option<String<64>> = None;
+    let mut pending_unsubscribe: Option<String<64>> = None;
 
     // Subscribe to raw binary data topic
     match client.subscribe_to_topic(raw_topic.as_str()).await {
@@ -521,8 +549,42 @@ async fn handle_live_mqtt_updates<'a>(
         }
     }
 
+    // Subscribe to config topic
+    match client.subscribe_to_topic(config_topic.as_str()).await {
+        Ok(_) => log::info!("Subscribed to topic: {}", config_topic.as_str()),
+        Err(e) => {
+            log::error!("MQTT config subscription error: {:?}", e);
+            return Err("Failed to subscribe to config topic");
+        }
+    }
+
     // Main MQTT receive loop
     loop {
+        // Apply pending subscription changes before receiving messages
+        if let Some(topic) = pending_subscribe.take() {
+            match client.subscribe_to_topic(topic.as_str()).await {
+                Ok(_) => {
+                    log::info!("Subscribed to dynamic topic: {}", topic.as_str());
+                    dynamic_topics.push(topic).ok();
+                }
+                Err(e) => log::error!("Failed to subscribe: {:?}", e),
+            }
+        }
+        if let Some(topic) = pending_unsubscribe.take() {
+            if let Some(pos) = dynamic_topics
+                .iter()
+                .position(|dt| dt.as_str() == topic.as_str())
+            {
+                match client.unsubscribe_from_topic(topic.as_str()).await {
+                    Ok(_) => {
+                        log::info!("Unsubscribed from: {}", topic.as_str());
+                        dynamic_topics.remove(pos);
+                    }
+                    Err(e) => log::error!("Failed to unsubscribe: {:?}", e),
+                }
+            }
+        }
+
         // Use select to await notification, ping timer, or MQTT message concurrently
         match select3(
             notification.changed(),
@@ -550,7 +612,7 @@ async fn handle_live_mqtt_updates<'a>(
                 );
 
                 match topic {
-                    topic if topic == raw_topic.as_str() => {
+                    t if t == raw_topic.as_str() => {
                         // Process chunk and send ACK if needed
                         match process_chunk(payload, display_channel).await {
                             Ok(send_ack) if send_ack => {
@@ -574,6 +636,68 @@ async fn handle_live_mqtt_updates<'a>(
                             }
                             Ok(_) => {} // No ACK needed
                             Err(e) => log::error!("Failed to process chunk: {}", e),
+                        }
+                    }
+                    t if t == config_topic.as_str() => {
+                        // Handle config messages for dynamic subscriptions
+                        match serde_json_core::from_slice::<ConfigPayload>(payload) {
+                            Ok((config, _)) => {
+                                // Queue subscribe request (applied at start of next loop)
+                                if let Some(new_topic) = config.subscribe {
+                                    if dynamic_topics.iter().any(|dt| dt.as_str() == new_topic) {
+                                        log::info!("Already subscribed to: {}", new_topic);
+                                    } else if dynamic_topics.len() >= MAX_DYNAMIC_TOPICS {
+                                        log::warn!(
+                                            "Max dynamic topics reached, cannot subscribe to: {}",
+                                            new_topic
+                                        );
+                                    } else if let Ok(topic_str) = String::<64>::try_from(new_topic)
+                                    {
+                                        log::info!("Queuing subscription to: {}", new_topic);
+                                        pending_subscribe = Some(topic_str);
+                                    }
+                                }
+
+                                // Queue unsubscribe request (applied at start of next loop)
+                                if let Some(remove_topic) = config.unsubscribe {
+                                    if dynamic_topics.iter().any(|dt| dt.as_str() == remove_topic) {
+                                        if let Ok(topic_str) = String::<64>::try_from(remove_topic)
+                                        {
+                                            log::info!(
+                                                "Queuing unsubscription from: {}",
+                                                remove_topic
+                                            );
+                                            pending_unsubscribe = Some(topic_str);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => log::error!("Failed to parse config payload: {:?}", e),
+                        }
+                    }
+                    t if dynamic_topics.iter().any(|dt| dt.as_str() == t) => {
+                        // Handle messages from dynamically subscribed topics (live updates)
+                        log::info!("Received live update from: {}", t);
+                        match process_chunk(payload, display_channel).await {
+                            Ok(send_ack) if send_ack => {
+                                let response = MqttResponse {
+                                    response: MqttResponseStatus::Success,
+                                };
+                                let mut response_buf = [0u8; 32];
+                                let len = serde_json_core::to_slice(&response, &mut response_buf)
+                                    .expect("Failed to serialize response");
+                                client
+                                    .send_message(
+                                        response_topic.as_str(),
+                                        &response_buf[..len],
+                                        rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
+                                        false,
+                                    )
+                                    .await
+                                    .ok();
+                            }
+                            Ok(_) => {}
+                            Err(e) => log::error!("Failed to process live update: {}", e),
                         }
                     }
                     _ => log::warn!("Received message on unexpected topic: {}", topic),
