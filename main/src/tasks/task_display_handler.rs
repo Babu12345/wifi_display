@@ -112,7 +112,6 @@ pub async fn task_display_handler(
                     Ok(_) => log::info!("Successfully displayed raw binary"),
                     Err(e) => log::error!("Error displaying raw binary: {:?}", e),
                 }
-                indicator.toggle();
             }
         }
         indicator.toggle();
