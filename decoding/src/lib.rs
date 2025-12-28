@@ -33,31 +33,6 @@ pub struct ChunkMetadata {
     pub total_chunks: usize,
 }
 
-/// Parse chunk metadata from JSON payload without decoding the frame data
-///
-/// # Arguments
-/// * `json_data` - Buffer containing JSON payload
-///
-/// # Returns
-/// ChunkMetadata or error message
-pub fn parse_chunk_metadata(json_data: &[u8]) -> Result<ChunkMetadata, &'static str> {
-    let json_end = json_data
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(json_data.len());
-
-    let json_slice = &json_data[..json_end];
-    let parsed: BinaryPayload = serde_json_core::from_slice(json_slice)
-        .map_err(|_| "Failed to parse JSON payload")?
-        .0;
-
-    Ok(ChunkMetadata {
-        requires_response: parsed.requires_response,
-        chunk_index: parsed.chunk_index,
-        total_chunks: parsed.total_chunks,
-    })
-}
-
 /// Decode a JSON chunk containing base64-encoded frame data
 ///
 /// # Arguments
@@ -189,18 +164,6 @@ mod tests {
         assert_eq!(parsed.requires_response, true);
         assert_eq!(parsed.chunk_index, 0);
         assert_eq!(parsed.total_chunks, 1);
-    }
-
-    #[test]
-    fn test_parse_chunk_metadata() {
-        let json =
-            b"{\"frame\":\"AQID\",\"requires_response\":true,\"chunk_index\":2,\"total_chunks\":5}";
-
-        let metadata = parse_chunk_metadata(json).unwrap();
-
-        assert_eq!(metadata.requires_response, true);
-        assert_eq!(metadata.chunk_index, 2);
-        assert_eq!(metadata.total_chunks, 5);
     }
 
     #[test]

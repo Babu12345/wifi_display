@@ -85,12 +85,9 @@ async fn process_chunk(
     payload: &[u8],
     display_channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
 ) -> Result<bool, &'static str> {
-    // Parse chunk metadata
-    let metadata = decoding::parse_chunk_metadata(payload)?;
-
-    // Decode chunk data
+    // Decode chunk data and get metadata
     let mut decode_buf = [0u8; MQTT_BUFFER_SIZE];
-    let (decoded_len, _) = decoding::decode_chunk(payload, &mut decode_buf)?;
+    let (decoded_len, metadata) = decoding::decode_chunk(payload, &mut decode_buf)?;
 
     // Update chunk metadata and write to display buffer
     let mut chunk_meta = CHUNK_META.lock().await;
