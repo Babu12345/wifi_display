@@ -47,15 +47,17 @@ pub enum DisplayMessage {
 }
 
 /// Chunk reassembly state for multi-chunk frame data
+/// Accumulates raw frame bytes until all chunks received
+#[derive(Debug)]
 struct ChunkState {
-    /// Buffer for assembling chunks
+    /// Buffer for assembling frame chunks
     buffer: [u8; DISPLAY_SIZE_IN_BYTES],
     /// Expected total number of chunks
     total_chunks: usize,
     /// Number of chunks received so far
     received_count: usize,
-    /// Bitmap to track which chunks have been received
-    received_chunks: [bool; 32], // Support up to 32 chunks (15KB / 512 bytes per chunk ≈ 30 chunks)
+    /// Current write offset in buffer
+    offset: usize,
 }
 
 impl ChunkState {
@@ -64,7 +66,7 @@ impl ChunkState {
             buffer: [0; DISPLAY_SIZE_IN_BYTES],
             total_chunks: 0,
             received_count: 0,
-            received_chunks: [false; 32],
+            offset: 0,
         }
     }
 
@@ -72,7 +74,7 @@ impl ChunkState {
         self.buffer.fill(0);
         self.total_chunks = 0;
         self.received_count = 0;
-        self.received_chunks.fill(false);
+        self.offset = 0;
     }
 
     fn is_complete(&self) -> bool {
@@ -111,8 +113,6 @@ pub async fn task_display_handler(
         // Wait for a display message
         let message = channel.receive().await;
         log::info!("Display task received message: {:?}", message);
-
-        indicator.toggle();
 
         // Process the message
         match message {
@@ -162,17 +162,17 @@ pub async fn task_display_handler(
 
                 if len > 0 {
                     log::info!("Processing raw binary data: {} bytes", len);
+                    indicator.toggle();
                     match display_raw_binary(&mut display, &buf[..len]).await {
                         Ok(_) => log::info!("Successfully displayed raw binary"),
                         Err(e) => log::error!("Error displaying raw binary: {:?}", e),
                     }
+                    indicator.toggle();
                 } else {
                     log::warn!("Empty raw binary buffer, skipping display");
                 }
             }
         }
-
-        indicator.toggle();
 
         // Rate limit: wait before allowing next display update
         Timer::after(Duration::from_millis(DISPLAY_UPDATE_DELAY_MS)).await;
@@ -368,7 +368,8 @@ async fn display_qr_code<'a, 'b>(
 }
 
 /// Update the e-ink display with raw binary data from JSON payload
-/// Decodes JSON, base64, and RLE compression, then displays the frame
+/// Chunks contain base64-encoded pieces of raw frame data.
+/// Accumulates frame bytes across chunks, then displays once complete.
 async fn display_raw_binary<'a>(
     display: &'a mut Display<
         'static,
@@ -381,37 +382,43 @@ async fn display_raw_binary<'a>(
     >,
     json_data: &[u8],
 ) -> Result<(), &'static str> {
-    // Get metadata first to determine chunk placement
+    // Get metadata first
     let metadata = decoding::parse_chunk_metadata(json_data)?;
 
     // Acquire chunk state
     let mut chunk_state = CHUNK_STATE.lock().await;
 
-    // Reset state for new frame
-    if metadata.chunk_index == 0 || chunk_state.total_chunks != metadata.total_chunks {
+    // Reset state for new frame (chunk 0 starts a new frame)
+    if metadata.chunk_index == 0 {
         chunk_state.reset();
         chunk_state.total_chunks = metadata.total_chunks;
     }
 
-    // Validate and check for duplicates
+    // Validate chunk index
     if metadata.chunk_index >= metadata.total_chunks {
         return Err("Invalid chunk index");
     }
-    if chunk_state.received_chunks[metadata.chunk_index] {
-        return Ok(());
-    }
 
-    // Decode directly into the correct position in the reassembly buffer
-    let chunk_size = DISPLAY_SIZE_IN_BYTES / metadata.total_chunks;
-    let offset = metadata.chunk_index * chunk_size;
-    let (_, _) = decoding::decode_chunk(json_data, &mut chunk_state.buffer[offset..])?;
-    chunk_state.received_chunks[metadata.chunk_index] = true;
+    // Base64 decode directly into local buffer
+    let mut decode_buf = [0u8; MQTT_BUFFER_SIZE];
+    let (decoded_len, _) = decoding::decode_chunk(json_data, &mut decode_buf)?;
+
+    // Append decoded frame data to chunk state buffer
+    let offset = chunk_state.offset;
+    let copy_len = decoded_len.min(DISPLAY_SIZE_IN_BYTES.saturating_sub(offset));
+    chunk_state.buffer[offset..offset + copy_len].copy_from_slice(&decode_buf[..copy_len]);
+    chunk_state.offset += copy_len;
     chunk_state.received_count += 1;
 
     // Wait for remaining chunks
     if !chunk_state.is_complete() {
         return Ok(());
     }
+
+    log::info!(
+        "All chunks received. Displaying {} bytes",
+        chunk_state.offset
+    );
 
     // Display the complete frame
     let mut display_on = display
