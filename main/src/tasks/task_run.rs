@@ -687,6 +687,28 @@ async fn handle_live_mqtt_updates<'a>(
                                         }
                                     }
                                 }
+
+                                // Send response if required
+                                if config.requires_response {
+                                    let response = MqttResponse {
+                                        response: MqttResponseStatus::Success,
+                                    };
+                                    let mut response_buf = [0u8; 32];
+                                    let len =
+                                        serde_json_core::to_slice(&response, &mut response_buf)
+                                            .expect("Failed to serialize response");
+                                    if let Err(e) = client
+                                        .send_message(
+                                            response_topic.as_str(),
+                                            &response_buf[..len],
+                                            rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
+                                            false,
+                                        )
+                                        .await
+                                    {
+                                        log::warn!("Failed to publish config ACK: {:?}", e);
+                                    }
+                                }
                             }
                             Err(e) => log::error!("Failed to parse config payload: {}", e),
                         }
