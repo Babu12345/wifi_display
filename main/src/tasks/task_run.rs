@@ -634,12 +634,6 @@ async fn handle_live_mqtt_updates<'a>(
                         // Handle config messages for dynamic subscriptions
                         match decoding::parse_config(payload) {
                             Ok(config) => {
-                                log::info!(
-                                    "Config received: chunk {}/{}",
-                                    config.chunk_index + 1,
-                                    config.total_chunks
-                                );
-
                                 // Queue subscribe request (applied at start of next loop)
                                 if let Some(new_topic) = config.subscribe {
                                     if is_reserved_topic(

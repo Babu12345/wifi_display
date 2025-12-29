@@ -34,7 +34,7 @@ pub struct ChunkMetadata {
 }
 
 /// Config payload for subscribing to additional topics
-/// Expected format: {"subscribe": "topic", "unsubscribe": "topic", "requires_response": bool, "chunk_index": N, "total_chunks": M}
+/// Expected format: {"subscribe": "topic", "unsubscribe": "topic", "requires_response": bool}
 #[derive(Debug, Deserialize)]
 pub struct ConfigPayload<'a> {
     /// Topic to subscribe to (e.g., "mta/updates", "stocks/AAPL")
@@ -45,10 +45,6 @@ pub struct ConfigPayload<'a> {
     pub unsubscribe: Option<&'a str>,
     /// Whether the client requires a response
     pub requires_response: bool,
-    /// Index of this chunk (0-based)
-    pub chunk_index: usize,
-    /// Total number of chunks
-    pub total_chunks: usize,
 }
 
 /// Decode a JSON chunk containing base64-encoded frame data
@@ -258,60 +254,35 @@ mod tests {
 
     #[test]
     fn test_parse_config_subscribe() {
-        let json = br#"{"subscribe":"mta/updates","requires_response":false,"chunk_index":0,"total_chunks":1}"#;
+        let json = br#"{"subscribe":"mta/updates","requires_response":false}"#;
 
         let config = parse_config(json).unwrap();
 
         assert_eq!(config.subscribe, Some("mta/updates"));
         assert_eq!(config.unsubscribe, None);
         assert_eq!(config.requires_response, false);
-        assert_eq!(config.chunk_index, 0);
-        assert_eq!(config.total_chunks, 1);
     }
 
     #[test]
     fn test_parse_config_unsubscribe() {
-        let json = br#"{"unsubscribe":"stocks/AAPL","requires_response":true,"chunk_index":0,"total_chunks":1}"#;
+        let json = br#"{"unsubscribe":"stocks/AAPL","requires_response":true}"#;
 
         let config = parse_config(json).unwrap();
 
         assert_eq!(config.subscribe, None);
         assert_eq!(config.unsubscribe, Some("stocks/AAPL"));
         assert_eq!(config.requires_response, true);
-        assert_eq!(config.chunk_index, 0);
-        assert_eq!(config.total_chunks, 1);
     }
 
     #[test]
     fn test_parse_config_both_fields() {
-        let json = br#"{"subscribe":"mta/updates","unsubscribe":"stocks/AAPL","requires_response":false,"chunk_index":0,"total_chunks":1}"#;
+        let json = br#"{"subscribe":"mta/updates","unsubscribe":"stocks/AAPL","requires_response":false}"#;
 
         let config = parse_config(json).unwrap();
 
         assert_eq!(config.subscribe, Some("mta/updates"));
         assert_eq!(config.unsubscribe, Some("stocks/AAPL"));
         assert_eq!(config.requires_response, false);
-        assert_eq!(config.chunk_index, 0);
-        assert_eq!(config.total_chunks, 1);
-    }
-
-    #[test]
-    fn test_parse_config_chunked() {
-        // First chunk
-        let json1 = br#"{"subscribe":"mta/updates","requires_response":false,"chunk_index":0,"total_chunks":2}"#;
-        let config1 = parse_config(json1).unwrap();
-
-        assert_eq!(config1.chunk_index, 0);
-        assert_eq!(config1.total_chunks, 2);
-        assert_eq!(config1.requires_response, false);
-
-        // Second chunk
-        let json2 = br#"{"unsubscribe":"stocks/AAPL","requires_response":true,"chunk_index":1,"total_chunks":2}"#;
-        let config2 = parse_config(json2).unwrap();
-
-        assert_eq!(config2.chunk_index, 1);
-        assert_eq!(config2.total_chunks, 2);
-        assert_eq!(config2.requires_response, true);
     }
 
     #[test]
@@ -323,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_parse_config_missing_required_fields() {
-        // Missing requires_response, chunk_index, total_chunks
+        // Missing requires_response
         let json = br#"{"subscribe":"mta/updates"}"#;
         let result = parse_config(json);
         assert!(result.is_err());
