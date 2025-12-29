@@ -33,6 +33,24 @@ pub struct ChunkMetadata {
     pub total_chunks: usize,
 }
 
+/// Config payload for subscribing to additional topics
+/// Expected format: {"subscribe": "topic", "unsubscribe": "topic", "requires_response": bool, "chunk_index": N, "total_chunks": M}
+#[derive(Debug, Deserialize)]
+pub struct ConfigPayload<'a> {
+    /// Topic to subscribe to (e.g., "mta/updates", "stocks/AAPL")
+    #[serde(borrow)]
+    pub subscribe: Option<&'a str>,
+    /// Topic to unsubscribe from
+    #[serde(borrow)]
+    pub unsubscribe: Option<&'a str>,
+    /// Whether the client requires a response
+    pub requires_response: bool,
+    /// Index of this chunk (0-based)
+    pub chunk_index: usize,
+    /// Total number of chunks
+    pub total_chunks: usize,
+}
+
 /// Decode a JSON chunk containing base64-encoded frame data
 ///
 /// # Arguments
@@ -74,25 +92,24 @@ fn parse_binary_payload(json_data: &[u8]) -> Result<(BinaryPayload<'_>, ChunkMet
     Ok((parsed, metadata))
 }
 
-/// Decode a JSON chunk containing base64-encoded config data
+/// Parse a config payload from JSON data
 ///
 /// # Arguments
-/// * `json_data` - JSON payload bytes
-/// * `output` - Output buffer for decoded config JSON
+/// * `json_data` - JSON payload bytes containing ConfigPayload
 ///
 /// # Returns
-/// Tuple of (decoded_bytes, chunk_metadata) or error
-pub fn decode_config<'a>(
-    json_data: &[u8],
-    output: &'a mut [u8],
-) -> Result<(&'a [u8], ChunkMetadata), &'static str> {
-    let (parsed, metadata) = parse_binary_payload(json_data)?;
+/// Parsed ConfigPayload or error
+pub fn parse_config(json_data: &[u8]) -> Result<ConfigPayload<'_>, &'static str> {
+    let json_end = json_data
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(json_data.len());
 
-    // Decode base64 directly to output
-    let decoded = Base64::decode(parsed.frame, output)
-        .map_err(|_| "Failed to decode base64")?;
+    let parsed: ConfigPayload = serde_json_core::from_slice(&json_data[..json_end])
+        .map_err(|_| "Failed to parse config JSON")?
+        .0;
 
-    Ok((decoded, metadata))
+    Ok(parsed)
 }
 
 #[cfg(test)]
@@ -240,125 +257,75 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_config_simple() {
-        // Config JSON payload
-        let config_json = br#"{"subscribe":"mta/updates"}"#;
+    fn test_parse_config_subscribe() {
+        let json = br#"{"subscribe":"mta/updates","requires_response":false,"chunk_index":0,"total_chunks":1}"#;
 
-        let mut base64_buf = [0u8; 100];
-        let b64_str = base64_encode(config_json, &mut base64_buf).unwrap();
+        let config = parse_config(json).unwrap();
 
-        let json_string = std::format!(
-            r#"{{"frame":"{}","requires_response":false,"chunk_index":0,"total_chunks":1}}"#,
-            b64_str
-        );
-        let mut output = [0u8; 100];
-
-        let (decoded, metadata) = decode_config(json_string.as_bytes(), &mut output).unwrap();
-
-        assert_eq!(decoded, config_json);
-        assert_eq!(metadata.requires_response, false);
-        assert_eq!(metadata.chunk_index, 0);
-        assert_eq!(metadata.total_chunks, 1);
+        assert_eq!(config.subscribe, Some("mta/updates"));
+        assert_eq!(config.unsubscribe, None);
+        assert_eq!(config.requires_response, false);
+        assert_eq!(config.chunk_index, 0);
+        assert_eq!(config.total_chunks, 1);
     }
 
     #[test]
-    fn test_decode_config_with_unsubscribe() {
-        let config_json = br#"{"unsubscribe":"stocks/AAPL"}"#;
+    fn test_parse_config_unsubscribe() {
+        let json = br#"{"unsubscribe":"stocks/AAPL","requires_response":true,"chunk_index":0,"total_chunks":1}"#;
 
-        let mut base64_buf = [0u8; 100];
-        let b64_str = base64_encode(config_json, &mut base64_buf).unwrap();
+        let config = parse_config(json).unwrap();
 
-        let json_string = std::format!(
-            r#"{{"frame":"{}","requires_response":true,"chunk_index":0,"total_chunks":1}}"#,
-            b64_str
-        );
-        let mut output = [0u8; 100];
-
-        let (decoded, metadata) = decode_config(json_string.as_bytes(), &mut output).unwrap();
-
-        assert_eq!(decoded, config_json);
-        assert_eq!(metadata.requires_response, true);
+        assert_eq!(config.subscribe, None);
+        assert_eq!(config.unsubscribe, Some("stocks/AAPL"));
+        assert_eq!(config.requires_response, true);
+        assert_eq!(config.chunk_index, 0);
+        assert_eq!(config.total_chunks, 1);
     }
 
     #[test]
-    fn test_decode_config_both_fields() {
-        let config_json = br#"{"subscribe":"mta/updates","unsubscribe":"stocks/AAPL"}"#;
+    fn test_parse_config_both_fields() {
+        let json = br#"{"subscribe":"mta/updates","unsubscribe":"stocks/AAPL","requires_response":false,"chunk_index":0,"total_chunks":1}"#;
 
-        let mut base64_buf = [0u8; 150];
-        let b64_str = base64_encode(config_json, &mut base64_buf).unwrap();
+        let config = parse_config(json).unwrap();
 
-        let json_string = std::format!(
-            r#"{{"frame":"{}","requires_response":false,"chunk_index":0,"total_chunks":1}}"#,
-            b64_str
-        );
-        let mut output = [0u8; 150];
-
-        let (decoded, metadata) = decode_config(json_string.as_bytes(), &mut output).unwrap();
-
-        assert_eq!(decoded, config_json);
-        assert_eq!(metadata.chunk_index, 0);
-        assert_eq!(metadata.total_chunks, 1);
+        assert_eq!(config.subscribe, Some("mta/updates"));
+        assert_eq!(config.unsubscribe, Some("stocks/AAPL"));
+        assert_eq!(config.requires_response, false);
+        assert_eq!(config.chunk_index, 0);
+        assert_eq!(config.total_chunks, 1);
     }
 
     #[test]
-    fn test_decode_config_chunked() {
-        // Simulate a config payload split into 2 chunks
-        let config_json = br#"{"subscribe":"some/very/long/topic/name/here"}"#;
+    fn test_parse_config_chunked() {
+        // First chunk
+        let json1 = br#"{"subscribe":"mta/updates","requires_response":false,"chunk_index":0,"total_chunks":2}"#;
+        let config1 = parse_config(json1).unwrap();
 
-        // Split into two parts
-        let mid = config_json.len() / 2;
-        let chunk1 = &config_json[..mid];
-        let chunk2 = &config_json[mid..];
+        assert_eq!(config1.chunk_index, 0);
+        assert_eq!(config1.total_chunks, 2);
+        assert_eq!(config1.requires_response, false);
 
-        // Encode and decode chunk 1
-        let mut base64_buf1 = [0u8; 100];
-        let b64_str1 = base64_encode(chunk1, &mut base64_buf1).unwrap();
-        let json_string1 = std::format!(
-            r#"{{"frame":"{}","requires_response":false,"chunk_index":0,"total_chunks":2}}"#,
-            b64_str1
-        );
-        let mut output1 = [0u8; 100];
-        let (decoded1, metadata1) = decode_config(json_string1.as_bytes(), &mut output1).unwrap();
+        // Second chunk
+        let json2 = br#"{"unsubscribe":"stocks/AAPL","requires_response":true,"chunk_index":1,"total_chunks":2}"#;
+        let config2 = parse_config(json2).unwrap();
 
-        assert_eq!(decoded1, chunk1);
-        assert_eq!(metadata1.chunk_index, 0);
-        assert_eq!(metadata1.total_chunks, 2);
-
-        // Encode and decode chunk 2
-        let mut base64_buf2 = [0u8; 100];
-        let b64_str2 = base64_encode(chunk2, &mut base64_buf2).unwrap();
-        let json_string2 = std::format!(
-            r#"{{"frame":"{}","requires_response":true,"chunk_index":1,"total_chunks":2}}"#,
-            b64_str2
-        );
-        let mut output2 = [0u8; 100];
-        let (decoded2, metadata2) = decode_config(json_string2.as_bytes(), &mut output2).unwrap();
-
-        assert_eq!(decoded2, chunk2);
-        assert_eq!(metadata2.chunk_index, 1);
-        assert_eq!(metadata2.total_chunks, 2);
-        assert_eq!(metadata2.requires_response, true);
-
-        // Reassemble
-        let mut reassembled = vec![0u8; config_json.len()];
-        reassembled[..decoded1.len()].copy_from_slice(decoded1);
-        reassembled[decoded1.len()..].copy_from_slice(decoded2);
-        assert_eq!(&reassembled[..], config_json);
+        assert_eq!(config2.chunk_index, 1);
+        assert_eq!(config2.total_chunks, 2);
+        assert_eq!(config2.requires_response, true);
     }
 
     #[test]
-    fn test_decode_config_invalid_json() {
+    fn test_parse_config_invalid_json() {
         let json = b"{invalid json}";
-        let mut output = [0u8; 100];
-        let result = decode_config(json, &mut output);
+        let result = parse_config(json);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_decode_config_invalid_base64() {
-        let json = b"{\"frame\":\"!!!invalid!!!\",\"requires_response\":false,\"chunk_index\":0,\"total_chunks\":1}";
-        let mut output = [0u8; 100];
-        let result = decode_config(json, &mut output);
+    fn test_parse_config_missing_required_fields() {
+        // Missing requires_response, chunk_index, total_chunks
+        let json = br#"{"subscribe":"mta/updates"}"#;
+        let result = parse_config(json);
         assert!(result.is_err());
     }
 }

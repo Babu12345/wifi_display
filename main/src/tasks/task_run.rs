@@ -118,76 +118,6 @@ async fn process_chunk(
     Ok(metadata.requires_response)
 }
 
-/// Max size for config payload buffer (config messages are small)
-const CONFIG_BUFFER_SIZE: usize = 256;
-
-/// Config chunk state with its own small buffer
-struct ConfigChunkState {
-    meta: ChunkMeta,
-    buffer: [u8; CONFIG_BUFFER_SIZE],
-}
-
-impl ConfigChunkState {
-    const fn new() -> Self {
-        Self {
-            meta: ChunkMeta::new(),
-            buffer: [0u8; CONFIG_BUFFER_SIZE],
-        }
-    }
-
-    fn reset(&mut self) {
-        self.meta.reset();
-        self.buffer.fill(0);
-    }
-}
-
-static CONFIG_CHUNK_STATE: Mutex<CriticalSectionRawMutex, ConfigChunkState> =
-    Mutex::new(ConfigChunkState::new());
-
-/// Result of processing a config chunk
-enum ConfigChunkResult<'a> {
-    /// More chunks needed
-    Pending,
-    /// All chunks received, config payload ready
-    Complete(&'a [u8]),
-}
-
-/// Process a config chunk from MQTT payload
-/// Decodes, accumulates, and returns the complete config when all chunks are received
-async fn process_config_chunk(payload: &[u8]) -> Result<ConfigChunkResult<'static>, &'static str> {
-    // Decode chunk data and get metadata
-    let mut decode_buf = [0u8; CONFIG_BUFFER_SIZE];
-    let (decoded, metadata) = decoding::decode_config(payload, &mut decode_buf)?;
-
-    let mut state = CONFIG_CHUNK_STATE.lock().await;
-
-    if metadata.chunk_index == 0 {
-        state.reset();
-        state.meta.total_chunks = metadata.total_chunks;
-    }
-
-    // Append to config buffer
-    let offset = state.meta.offset;
-    let end = offset + decoded.len();
-    if end <= CONFIG_BUFFER_SIZE {
-        state.buffer[offset..end].copy_from_slice(decoded);
-        state.meta.offset = end;
-        state.meta.received_count += 1;
-    } else {
-        return Err("Config payload too large");
-    }
-
-    // Check if all chunks received
-    if state.meta.is_complete() {
-        let len = state.meta.offset;
-        // SAFETY: We're returning a reference to static data
-        let buffer_ptr = state.buffer.as_ptr();
-        let static_slice = unsafe { core::slice::from_raw_parts(buffer_ptr, len) };
-        return Ok(ConfigChunkResult::Complete(static_slice));
-    }
-
-    Ok(ConfigChunkResult::Pending)
-}
 
 /// Display mode for the main task
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -217,17 +147,6 @@ struct MqttResponse {
 
 /// Maximum number of dynamic topic subscriptions
 const MAX_DYNAMIC_TOPICS: usize = 4;
-
-/// Config payload for subscribing to additional topics
-#[derive(Debug, serde::Deserialize)]
-struct ConfigPayload<'a> {
-    /// Topic to subscribe to (e.g., "mta/updates", "stocks/AAPL")
-    #[serde(borrow)]
-    subscribe: Option<&'a str>,
-    /// Topic to unsubscribe from
-    #[serde(borrow)]
-    unsubscribe: Option<&'a str>,
-}
 
 /// Check if a topic is a reserved core topic that cannot be dynamically subscribed/unsubscribed
 fn is_reserved_topic(topic: &str, raw_topic: &str, config_topic: &str) -> bool {
@@ -712,74 +631,70 @@ async fn handle_live_mqtt_updates<'a>(
                         }
                     }
                     t if t == config_topic.as_str() => {
-                        // Handle config messages for dynamic subscriptions (base64 encoded, potentially chunked)
-                        match process_config_chunk(payload).await {
-                            Ok(ConfigChunkResult::Pending) => {
-                                log::info!("Config chunk received, waiting for more...");
-                            }
-                            Ok(ConfigChunkResult::Complete(config_data)) => {
-                                match serde_json_core::from_slice::<ConfigPayload>(config_data) {
-                                    Ok((config, _)) => {
-                                        // Queue subscribe request (applied at start of next loop)
-                                        if let Some(new_topic) = config.subscribe {
-                                            if is_reserved_topic(
-                                                new_topic,
-                                                raw_topic.as_str(),
-                                                config_topic.as_str(),
-                                            ) {
-                                                log::warn!(
-                                                    "Cannot subscribe to reserved topic: {}",
-                                                    new_topic
-                                                );
-                                            } else if dynamic_topics
-                                                .iter()
-                                                .any(|dt| dt.as_str() == new_topic)
-                                            {
-                                                log::info!("Already subscribed to: {}", new_topic);
-                                            } else if dynamic_topics.len() >= MAX_DYNAMIC_TOPICS {
-                                                log::warn!(
-                                                    "Max dynamic topics reached, cannot subscribe to: {}",
-                                                    new_topic
-                                                );
-                                            } else if let Ok(topic_str) =
-                                                String::<64>::try_from(new_topic)
-                                            {
-                                                log::info!("Queuing subscription to: {}", new_topic);
-                                                pending_subscribe = Some(topic_str);
-                                            }
-                                        }
+                        // Handle config messages for dynamic subscriptions
+                        match decoding::parse_config(payload) {
+                            Ok(config) => {
+                                log::info!(
+                                    "Config received: chunk {}/{}",
+                                    config.chunk_index + 1,
+                                    config.total_chunks
+                                );
 
-                                        // Queue unsubscribe request (applied at start of next loop)
-                                        if let Some(remove_topic) = config.unsubscribe {
-                                            if is_reserved_topic(
-                                                remove_topic,
-                                                raw_topic.as_str(),
-                                                config_topic.as_str(),
-                                            ) {
-                                                log::warn!(
-                                                    "Cannot unsubscribe from reserved topic: {}",
-                                                    remove_topic
-                                                );
-                                            } else if dynamic_topics
-                                                .iter()
-                                                .any(|dt| dt.as_str() == remove_topic)
-                                            {
-                                                if let Ok(topic_str) =
-                                                    String::<64>::try_from(remove_topic)
-                                                {
-                                                    log::info!(
-                                                        "Queuing unsubscription from: {}",
-                                                        remove_topic
-                                                    );
-                                                    pending_unsubscribe = Some(topic_str);
-                                                }
-                                            }
+                                // Queue subscribe request (applied at start of next loop)
+                                if let Some(new_topic) = config.subscribe {
+                                    if is_reserved_topic(
+                                        new_topic,
+                                        raw_topic.as_str(),
+                                        config_topic.as_str(),
+                                    ) {
+                                        log::warn!(
+                                            "Cannot subscribe to reserved topic: {}",
+                                            new_topic
+                                        );
+                                    } else if dynamic_topics
+                                        .iter()
+                                        .any(|dt| dt.as_str() == new_topic)
+                                    {
+                                        log::info!("Already subscribed to: {}", new_topic);
+                                    } else if dynamic_topics.len() >= MAX_DYNAMIC_TOPICS {
+                                        log::warn!(
+                                            "Max dynamic topics reached, cannot subscribe to: {}",
+                                            new_topic
+                                        );
+                                    } else if let Ok(topic_str) = String::<64>::try_from(new_topic)
+                                    {
+                                        log::info!("Queuing subscription to: {}", new_topic);
+                                        pending_subscribe = Some(topic_str);
+                                    }
+                                }
+
+                                // Queue unsubscribe request (applied at start of next loop)
+                                if let Some(remove_topic) = config.unsubscribe {
+                                    if is_reserved_topic(
+                                        remove_topic,
+                                        raw_topic.as_str(),
+                                        config_topic.as_str(),
+                                    ) {
+                                        log::warn!(
+                                            "Cannot unsubscribe from reserved topic: {}",
+                                            remove_topic
+                                        );
+                                    } else if dynamic_topics
+                                        .iter()
+                                        .any(|dt| dt.as_str() == remove_topic)
+                                    {
+                                        if let Ok(topic_str) = String::<64>::try_from(remove_topic)
+                                        {
+                                            log::info!(
+                                                "Queuing unsubscription from: {}",
+                                                remove_topic
+                                            );
+                                            pending_unsubscribe = Some(topic_str);
                                         }
                                     }
-                                    Err(e) => log::error!("Failed to parse config payload: {:?}", e),
                                 }
                             }
-                            Err(e) => log::error!("Failed to process config chunk: {}", e),
+                            Err(e) => log::error!("Failed to parse config payload: {}", e),
                         }
                     }
                     t if dynamic_topics.iter().any(|dt| dt.as_str() == t) => {
