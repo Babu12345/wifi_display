@@ -213,7 +213,7 @@ async fn display_text<'a, 'b>(
     log::info!("Updating display with text");
 
     let mut display_on = display
-        .on()
+        .on(false)
         .await
         .map_err(|_| "Failed to turn on display")?;
 
@@ -230,7 +230,7 @@ async fn display_text<'a, 'b>(
         .map_err(|_| "Failed to update display")?;
 
     display_on
-        .off()
+        .off(false)
         .await
         .map_err(|_| "Failed to turn off display")?;
 
@@ -293,7 +293,7 @@ async fn display_qr_code<'a, 'b>(
     let qr = qr.with_position(x_pos, y_pos);
 
     let mut display_on = display
-        .on()
+        .on(false)
         .await
         .map_err(|_| "Failed to turn on display")?;
 
@@ -305,7 +305,7 @@ async fn display_qr_code<'a, 'b>(
         .map_err(|_| "Failed to update display")?;
 
     display_on
-        .off()
+        .off(false)
         .await
         .map_err(|_| "Failed to turn off display")?;
 
@@ -328,7 +328,7 @@ async fn display_raw_binary<'a>(
     log::info!("Rendering frame to display");
 
     let mut display_on = display
-        .on()
+        .on(false)
         .await
         .map_err(|_| "Failed to turn on display")?;
 
@@ -336,11 +336,5 @@ async fn display_raw_binary<'a>(
         .update_and_save_frame::<FlashStorage>(&mut frame_data.match_size(0x00), true)
         .await
         .map_err(|_| "Failed to update display")?;
-
-    display_on
-        .off()
-        .await
-        .map_err(|_| "Failed to turn off display")?;
-
     Ok(())
 }
