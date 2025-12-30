@@ -38,7 +38,7 @@ const MQTT_PORT: u16 = 8883; // TLS port
 const MQTT_CLIENT_ID: &str = "client1";
 const MQTT_TIMEOUT_SECS: u16 = 120;
 /// Max size in bytes of the data being sent via AWS
-pub const MQTT_BUFFER_SIZE: usize = 7_000;
+pub const MQTT_BUFFER_SIZE: usize = 7_500;
 
 // Static buffers for MQTT to avoid stack overflow
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
