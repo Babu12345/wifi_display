@@ -118,8 +118,9 @@ async fn main(spawner: Spawner) {
     let indicator = Output::new(peripherals.GPIO2, Level::Low);
     let display = mk_static!(
         DisplayBuilder<SpiV2<'static, Async>, Input<'static>, Output<'static>, EPD417_SIZE, EPD417>,
-        DisplayBuilder::new(SpiV2::from(spi), cs, rst, dc, bs).with_max_cycles(30)
+        DisplayBuilder::new(SpiV2::from(spi), cs, rst, dc, bs)
     )
+    .with_max_cycles(30)
     .build();
 
     // Create display channel for rate-limited display updates

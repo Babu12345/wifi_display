@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::tasks::task_display_handler::{
     DISPLAY_CHANNEL_SIZE, DisplayMessage, append_to_display_buffer, queue_frame_ready,
-    queue_qr_display, queue_text_display, reset_display_buffer,
+    queue_qr_display, queue_set_max_cycles, queue_text_display, reset_display_buffer,
 };
 use crate::{AsyncStack, NotificationType};
 use embassy_futures::select::{Either3, select3};
@@ -823,6 +823,12 @@ async fn handle_live_mqtt_updates<'a>(
                                         "Set minimum update interval to {} seconds",
                                         interval
                                     );
+                                }
+
+                                // Handle max_cycles setting
+                                if let Some(cycles) = config.max_cycles {
+                                    log::info!("Setting display max cycles to {}", cycles);
+                                    queue_set_max_cycles(display_channel, cycles);
                                 }
 
                                 // Send response if required

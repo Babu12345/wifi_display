@@ -31,6 +31,8 @@ pub enum DisplayMessage {
     QRCode,
     /// Display raw binary data (complete frame from MQTT)
     RawBinary,
+    /// Update max cycles before full refresh
+    SetMaxCycles(u8),
 }
 
 // Static buffer to transmit display data from the different tasks protected by a Mutex
@@ -116,6 +118,10 @@ pub async fn task_display_handler(
                     Err(e) => log::error!("Error displaying raw binary: {:?}", e),
                 }
             }
+            DisplayMessage::SetMaxCycles(cycles) => {
+                log::info!("Setting max cycles to {}", cycles);
+                display.set_max_cycles(cycles);
+            }
         }
 
         // Rate limit: wait before allowing next display update
@@ -196,6 +202,19 @@ pub fn queue_frame_ready(
 ) {
     if channel.try_send(DisplayMessage::RawBinary).is_err() {
         log::warn!("Display channel full, frame may be dropped");
+    }
+}
+
+/// Queue a max cycles update for the display
+pub fn queue_set_max_cycles(
+    channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
+    cycles: u8,
+) {
+    if channel
+        .try_send(DisplayMessage::SetMaxCycles(cycles))
+        .is_err()
+    {
+        log::warn!("Display channel full, max cycles update may be dropped");
     }
 }
 
