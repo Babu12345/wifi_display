@@ -35,7 +35,7 @@ const REFRESH_INTERVAL_SECS: u64 = 60;
 const MQTT_BROKER_CSTR: &CStr = c"avbh2adibwzla-ats.iot.us-east-2.amazonaws.com";
 const MQTT_PORT: u16 = 8883; // TLS port
 // Client ID: Update this 6-character alphanumeric code for each board
-const MQTT_CLIENT_ID: &str = "client1";
+const MQTT_CLIENT_ID: &str = "000000";
 const MQTT_TIMEOUT_SECS: u16 = 120;
 /// Max size in bytes of the data being sent via AWS
 pub const MQTT_BUFFER_SIZE: usize = 7_500;
@@ -195,7 +195,11 @@ fn save_mqtt_topics(topics: &heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS>) {
                 0,
                 &encode_buf[..len],
             ) {
-                Ok(_) => log::info!("Saved {} MQTT topics to storage ({} bytes)", topics.len(), len),
+                Ok(_) => log::info!(
+                    "Saved {} MQTT topics to storage ({} bytes)",
+                    topics.len(),
+                    len
+                ),
                 Err(e) => log::error!("Failed to write MQTT topics: {:?}", e),
             }
         }
@@ -302,7 +306,10 @@ fn load_min_update_interval() -> Option<u16> {
                 return None;
             }
             let interval = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-            log::info!("Loaded min_update_interval from storage: {} seconds", interval);
+            log::info!(
+                "Loaded min_update_interval from storage: {} seconds",
+                interval
+            );
             Some(interval as u16)
         }
         Err(e) => {
@@ -724,7 +731,11 @@ async fn handle_live_mqtt_updates<'a>(
     for topic in dynamic_topics.iter() {
         match client.subscribe_to_topic(topic.as_str()).await {
             Ok(_) => log::info!("Restored subscription to: {}", topic.as_str()),
-            Err(e) => log::error!("Failed to restore subscription to {}: {:?}", topic.as_str(), e),
+            Err(e) => log::error!(
+                "Failed to restore subscription to {}: {:?}",
+                topic.as_str(),
+                e
+            ),
         }
     }
 
@@ -734,7 +745,10 @@ async fn handle_live_mqtt_updates<'a>(
         // Process unsubscribe_all first, then unsubscribe, then subscribe
         if pending_unsubscribe_all {
             pending_unsubscribe_all = false;
-            log::info!("Unsubscribing from all {} dynamic topics", dynamic_topics.len());
+            log::info!(
+                "Unsubscribing from all {} dynamic topics",
+                dynamic_topics.len()
+            );
             while let Some(topic) = dynamic_topics.pop() {
                 match client.unsubscribe_from_topic(topic.as_str()).await {
                     Ok(_) => {
