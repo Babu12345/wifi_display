@@ -156,6 +156,84 @@ fn is_reserved_topic(topic: &str, raw_topic: &str, config_topic: &str) -> bool {
     topic == raw_topic || topic == config_topic
 }
 
+/// Storage size for MQTT topics (must fit in MqttTopics storage area)
+const MQTT_TOPICS_STORAGE_SIZE: usize = 512;
+
+/// Serializable MQTT topics for persistent storage
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MqttTopicsData {
+    topics: heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS>,
+}
+
+impl MqttTopicsData {
+    fn to_bytes(&self, out: &mut [u8]) -> Result<usize, &'static str> {
+        bincode::serde::encode_into_slice(self, out, bincode::config::standard())
+            .map_err(|_| "Failed to serialize MQTT topics")
+    }
+
+    fn from_bytes(payload: &[u8]) -> Result<Self, &'static str> {
+        bincode::serde::decode_from_slice(payload, bincode::config::standard())
+            .map(|(data, _)| data)
+            .map_err(|_| "Failed to deserialize MQTT topics")
+    }
+}
+
+/// Save dynamic topics to flash storage using bincode
+fn save_mqtt_topics(topics: &heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS>) {
+    let mut storage_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    let data = MqttTopicsData {
+        topics: topics.clone(),
+    };
+
+    let mut encode_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
+    match data.to_bytes(&mut encode_buf) {
+        Ok(len) => {
+            match storage.write_bytes(
+                storage::storage::StorageContents::MqttTopics,
+                0,
+                &encode_buf[..len],
+            ) {
+                Ok(_) => log::info!("Saved {} MQTT topics to storage ({} bytes)", topics.len(), len),
+                Err(e) => log::error!("Failed to write MQTT topics: {:?}", e),
+            }
+        }
+        Err(e) => log::error!("Failed to serialize MQTT topics: {}", e),
+    }
+}
+
+/// Load dynamic topics from flash storage using bincode
+fn load_mqtt_topics() -> heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS> {
+    let mut storage_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    match storage.read(storage::storage::StorageContents::MqttTopics) {
+        Ok(data) => {
+            // Check if storage is empty (0xFF means uninitialized)
+            if data[0] == 0xFF {
+                log::info!("No saved MQTT topics found");
+                return heapless::Vec::new();
+            }
+
+            match MqttTopicsData::from_bytes(data) {
+                Ok(mqtt_data) => {
+                    log::info!("Loaded {} MQTT topics from storage", mqtt_data.topics.len());
+                    mqtt_data.topics
+                }
+                Err(e) => {
+                    log::warn!("Failed to parse MQTT topics: {}", e);
+                    heapless::Vec::new()
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to read MQTT topics: {:?}", e);
+            heapless::Vec::new()
+        }
+    }
+}
+
 /// Main application task - manages WiFi connection, MQTT communication, and display modes
 ///
 /// Handles three display modes:
@@ -528,13 +606,14 @@ async fn handle_live_mqtt_updates<'a>(
     )
     .map_err(|_| "Failed to format response topic")?;
 
-    // Track dynamically subscribed topics
-    let mut dynamic_topics: heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS> = heapless::Vec::new();
+    // Load saved dynamic topics from storage
+    let mut dynamic_topics = load_mqtt_topics();
 
     // Pending subscription changes (applied at start of loop)
     let mut pending_subscribe: Option<String<64>> = None;
     let mut pending_unsubscribe: Option<String<64>> = None;
     let mut pending_unsubscribe_all = false;
+    let mut topics_changed = false;
 
     // Subscribe to raw binary data topic
     match client.subscribe_to_topic(raw_topic.as_str()).await {
@@ -554,6 +633,14 @@ async fn handle_live_mqtt_updates<'a>(
         }
     }
 
+    // Subscribe to saved dynamic topics
+    for topic in dynamic_topics.iter() {
+        match client.subscribe_to_topic(topic.as_str()).await {
+            Ok(_) => log::info!("Restored subscription to: {}", topic.as_str()),
+            Err(e) => log::error!("Failed to restore subscription to {}: {:?}", topic.as_str(), e),
+        }
+    }
+
     // Main MQTT receive loop
     loop {
         // Apply pending subscription changes before receiving messages
@@ -563,7 +650,10 @@ async fn handle_live_mqtt_updates<'a>(
             log::info!("Unsubscribing from all {} dynamic topics", dynamic_topics.len());
             while let Some(topic) = dynamic_topics.pop() {
                 match client.unsubscribe_from_topic(topic.as_str()).await {
-                    Ok(_) => log::info!("Unsubscribed from: {}", topic.as_str()),
+                    Ok(_) => {
+                        log::info!("Unsubscribed from: {}", topic.as_str());
+                        topics_changed = true;
+                    }
                     Err(e) => log::error!("Failed to unsubscribe from {}: {:?}", topic.as_str(), e),
                 }
             }
@@ -577,6 +667,7 @@ async fn handle_live_mqtt_updates<'a>(
                     Ok(_) => {
                         log::info!("Unsubscribed from: {}", topic.as_str());
                         dynamic_topics.remove(pos);
+                        topics_changed = true;
                     }
                     Err(e) => log::error!("Failed to unsubscribe: {:?}", e),
                 }
@@ -587,9 +678,16 @@ async fn handle_live_mqtt_updates<'a>(
                 Ok(_) => {
                     log::info!("Subscribed to dynamic topic: {}", topic.as_str());
                     dynamic_topics.push(topic).ok();
+                    topics_changed = true;
                 }
                 Err(e) => log::error!("Failed to subscribe: {:?}", e),
             }
+        }
+
+        // Save topics to storage if changed
+        if topics_changed {
+            topics_changed = false;
+            save_mqtt_topics(&dynamic_topics);
         }
 
         // Use select to await notification, ping timer, or MQTT message concurrently
