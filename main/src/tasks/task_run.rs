@@ -118,7 +118,6 @@ async fn process_chunk(
     Ok(metadata.requires_response)
 }
 
-
 /// Display mode for the main task
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DisplayMode {
