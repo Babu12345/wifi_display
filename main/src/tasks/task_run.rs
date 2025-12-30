@@ -234,6 +234,84 @@ fn load_mqtt_topics() -> heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS> {
     }
 }
 
+/// Save max_cycles setting to flash storage (stored as u16, 2 bytes)
+fn save_max_cycles(cycles: u8) {
+    let mut storage_buf = [0u8; 16];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    let bytes = (cycles as u16).to_le_bytes();
+    match storage.write_bytes(
+        storage::storage::StorageContents::MaxCyclesBeforeFullRefresh,
+        0,
+        &bytes,
+    ) {
+        Ok(_) => log::info!("Saved max_cycles to storage: {}", cycles),
+        Err(e) => log::error!("Failed to write max_cycles: {:?}", e),
+    }
+}
+
+/// Load max_cycles setting from flash storage (stored as u16, 2 bytes)
+fn load_max_cycles() -> Option<u8> {
+    let mut storage_buf = [0u8; 16];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    match storage.read(storage::storage::StorageContents::MaxCyclesBeforeFullRefresh) {
+        Ok(data) => {
+            // Check if storage is empty (0xFF means uninitialized)
+            if data[0] == 0xFF && data[1] == 0xFF {
+                log::info!("No saved max_cycles found");
+                return None;
+            }
+            let cycles = u16::from_le_bytes([data[0], data[1]]);
+            log::info!("Loaded max_cycles from storage: {}", cycles);
+            Some(cycles as u8)
+        }
+        Err(e) => {
+            log::error!("Failed to read max_cycles: {:?}", e);
+            None
+        }
+    }
+}
+
+/// Save min_update_interval setting to flash storage (stored as u32, 4 bytes)
+fn save_min_update_interval(interval: u16) {
+    let mut storage_buf = [0u8; 16];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    let bytes = (interval as u32).to_le_bytes();
+    match storage.write_bytes(
+        storage::storage::StorageContents::MinUpdateInterval,
+        0,
+        &bytes,
+    ) {
+        Ok(_) => log::info!("Saved min_update_interval to storage: {} seconds", interval),
+        Err(e) => log::error!("Failed to write min_update_interval: {:?}", e),
+    }
+}
+
+/// Load min_update_interval setting from flash storage (stored as u32, 4 bytes)
+fn load_min_update_interval() -> Option<u16> {
+    let mut storage_buf = [0u8; 16];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    match storage.read(storage::storage::StorageContents::MinUpdateInterval) {
+        Ok(data) => {
+            // Check if storage is empty (0xFF means uninitialized)
+            if data[0] == 0xFF && data[1] == 0xFF && data[2] == 0xFF && data[3] == 0xFF {
+                log::info!("No saved min_update_interval found");
+                return None;
+            }
+            let interval = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+            log::info!("Loaded min_update_interval from storage: {} seconds", interval);
+            Some(interval as u16)
+        }
+        Err(e) => {
+            log::error!("Failed to read min_update_interval: {:?}", e);
+            None
+        }
+    }
+}
+
 /// Main application task - manages WiFi connection, MQTT communication, and display modes
 ///
 /// Handles three display modes:
@@ -615,9 +693,14 @@ async fn handle_live_mqtt_updates<'a>(
     let mut pending_unsubscribe_all = false;
     let mut topics_changed = false;
 
-    // Rate limiting for live updates
-    let mut min_update_interval_secs: u16 = 0; // 0 = no limit
+    // Rate limiting for live updates - load saved value or default to 0
+    let mut min_update_interval_secs: u16 = load_min_update_interval().unwrap_or(0);
     let mut last_update_instant: Option<embassy_time::Instant> = None;
+
+    // Load and apply saved max_cycles setting
+    if let Some(cycles) = load_max_cycles() {
+        queue_set_max_cycles(display_channel, cycles);
+    }
 
     // Subscribe to raw binary data topic
     match client.subscribe_to_topic(raw_topic.as_str()).await {
@@ -819,6 +902,7 @@ async fn handle_live_mqtt_updates<'a>(
                                 // Handle min_update_interval setting
                                 if let Some(interval) = config.min_update_interval {
                                     min_update_interval_secs = interval;
+                                    save_min_update_interval(interval);
                                     log::info!(
                                         "Set minimum update interval to {} seconds",
                                         interval
@@ -829,6 +913,7 @@ async fn handle_live_mqtt_updates<'a>(
                                 if let Some(cycles) = config.max_cycles {
                                     log::info!("Setting display max cycles to {}", cycles);
                                     queue_set_max_cycles(display_channel, cycles);
+                                    save_max_cycles(cycles);
                                 }
 
                                 // Send response if required
