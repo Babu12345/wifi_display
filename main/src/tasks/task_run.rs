@@ -557,13 +557,15 @@ async fn handle_live_mqtt_updates<'a>(
     // Main MQTT receive loop
     loop {
         // Apply pending subscription changes before receiving messages
-        if let Some(topic) = pending_subscribe.take() {
-            match client.subscribe_to_topic(topic.as_str()).await {
-                Ok(_) => {
-                    log::info!("Subscribed to dynamic topic: {}", topic.as_str());
-                    dynamic_topics.push(topic).ok();
+        // Process unsubscribe_all first, then unsubscribe, then subscribe
+        if pending_unsubscribe_all {
+            pending_unsubscribe_all = false;
+            log::info!("Unsubscribing from all {} dynamic topics", dynamic_topics.len());
+            while let Some(topic) = dynamic_topics.pop() {
+                match client.unsubscribe_from_topic(topic.as_str()).await {
+                    Ok(_) => log::info!("Unsubscribed from: {}", topic.as_str()),
+                    Err(e) => log::error!("Failed to unsubscribe from {}: {:?}", topic.as_str(), e),
                 }
-                Err(e) => log::error!("Failed to subscribe: {:?}", e),
             }
         }
         if let Some(topic) = pending_unsubscribe.take() {
@@ -580,14 +582,13 @@ async fn handle_live_mqtt_updates<'a>(
                 }
             }
         }
-        if pending_unsubscribe_all {
-            pending_unsubscribe_all = false;
-            log::info!("Unsubscribing from all {} dynamic topics", dynamic_topics.len());
-            while let Some(topic) = dynamic_topics.pop() {
-                match client.unsubscribe_from_topic(topic.as_str()).await {
-                    Ok(_) => log::info!("Unsubscribed from: {}", topic.as_str()),
-                    Err(e) => log::error!("Failed to unsubscribe from {}: {:?}", topic.as_str(), e),
+        if let Some(topic) = pending_subscribe.take() {
+            match client.subscribe_to_topic(topic.as_str()).await {
+                Ok(_) => {
+                    log::info!("Subscribed to dynamic topic: {}", topic.as_str());
+                    dynamic_topics.push(topic).ok();
                 }
+                Err(e) => log::error!("Failed to subscribe: {:?}", e),
             }
         }
 
@@ -659,12 +660,17 @@ async fn handle_live_mqtt_updates<'a>(
                                             "Cannot subscribe to reserved topic: {}",
                                             new_topic
                                         );
-                                    } else if dynamic_topics
-                                        .iter()
-                                        .any(|dt| dt.as_str() == new_topic)
+                                    } else if !config.unsubscribe_all
+                                        && dynamic_topics.iter().any(|dt| dt.as_str() == new_topic)
                                     {
+                                        // Skip "already subscribed" check if unsubscribe_all is set
+                                        // since topics will be cleared before subscribing
                                         log::info!("Already subscribed to: {}", new_topic);
-                                    } else if dynamic_topics.len() >= MAX_DYNAMIC_TOPICS {
+                                    } else if !config.unsubscribe_all
+                                        && dynamic_topics.len() >= MAX_DYNAMIC_TOPICS
+                                    {
+                                        // Skip capacity check if unsubscribe_all is set
+                                        // since topics will be cleared before subscribing
                                         log::warn!(
                                             "Max dynamic topics reached, cannot subscribe to: {}",
                                             new_topic
