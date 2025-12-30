@@ -14,7 +14,7 @@ use text::{Alignment, FontSize, Text};
 
 /// Size of the display message channel
 pub const DISPLAY_CHANNEL_SIZE: usize = 5;
-const DISPLAY_UPDATE_DELAY_MS: u64 = 200; // Minimum delay between display updates
+const DISPLAY_UPDATE_DELAY_MS: u64 = 20; // Minimum delay between display updates
 const DISPLAY_TEXT_BUFFER_LENGTH: usize = 512;
 
 const DISPLAY_WIDTH: u32 = 400;
