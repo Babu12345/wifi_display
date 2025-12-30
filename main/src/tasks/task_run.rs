@@ -534,6 +534,7 @@ async fn handle_live_mqtt_updates<'a>(
     // Pending subscription changes (applied at start of loop)
     let mut pending_subscribe: Option<String<64>> = None;
     let mut pending_unsubscribe: Option<String<64>> = None;
+    let mut pending_unsubscribe_all = false;
 
     // Subscribe to raw binary data topic
     match client.subscribe_to_topic(raw_topic.as_str()).await {
@@ -576,6 +577,16 @@ async fn handle_live_mqtt_updates<'a>(
                         dynamic_topics.remove(pos);
                     }
                     Err(e) => log::error!("Failed to unsubscribe: {:?}", e),
+                }
+            }
+        }
+        if pending_unsubscribe_all {
+            pending_unsubscribe_all = false;
+            log::info!("Unsubscribing from all {} dynamic topics", dynamic_topics.len());
+            while let Some(topic) = dynamic_topics.pop() {
+                match client.unsubscribe_from_topic(topic.as_str()).await {
+                    Ok(_) => log::info!("Unsubscribed from: {}", topic.as_str()),
+                    Err(e) => log::error!("Failed to unsubscribe from {}: {:?}", topic.as_str(), e),
                 }
             }
         }
@@ -689,6 +700,12 @@ async fn handle_live_mqtt_updates<'a>(
                                             pending_unsubscribe = Some(topic_str);
                                         }
                                     }
+                                }
+
+                                // Queue unsubscribe all request
+                                if config.unsubscribe_all {
+                                    log::info!("Queuing unsubscribe from all dynamic topics");
+                                    pending_unsubscribe_all = true;
                                 }
 
                                 // Send response if required

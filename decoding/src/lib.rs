@@ -34,7 +34,7 @@ pub struct ChunkMetadata {
 }
 
 /// Config payload for subscribing to additional topics
-/// Expected format: {"subscribe": "topic", "unsubscribe": "topic", "requires_response": bool}
+/// Expected format: {"subscribe": "topic", "unsubscribe": "topic", "unsubscribe_all": bool, "requires_response": bool}
 #[derive(Debug, Deserialize)]
 pub struct ConfigPayload<'a> {
     /// Topic to subscribe to (e.g., "mta/updates", "stocks/AAPL")
@@ -43,6 +43,9 @@ pub struct ConfigPayload<'a> {
     /// Topic to unsubscribe from
     #[serde(borrow)]
     pub unsubscribe: Option<&'a str>,
+    /// Unsubscribe from all dynamic topics
+    #[serde(default)]
+    pub unsubscribe_all: bool,
     /// Whether the client requires a response
     pub requires_response: bool,
 }
@@ -298,5 +301,27 @@ mod tests {
         let json = br#"{"subscribe":"mta/updates"}"#;
         let result = parse_config(json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_config_unsubscribe_all() {
+        let json = br#"{"unsubscribe_all":true,"requires_response":true}"#;
+
+        let config = parse_config(json).unwrap();
+
+        assert_eq!(config.subscribe, None);
+        assert_eq!(config.unsubscribe, None);
+        assert_eq!(config.unsubscribe_all, true);
+        assert_eq!(config.requires_response, true);
+    }
+
+    #[test]
+    fn test_parse_config_unsubscribe_all_default() {
+        // unsubscribe_all should default to false when not specified
+        let json = br#"{"subscribe":"mta/updates","requires_response":false}"#;
+
+        let config = parse_config(json).unwrap();
+
+        assert_eq!(config.unsubscribe_all, false);
     }
 }
