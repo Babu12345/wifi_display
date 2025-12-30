@@ -63,10 +63,10 @@ pub async fn task_display_handler(
         let message = channel.receive().await;
         log::info!("Display task received message: {:?}", message);
 
-        indicator.toggle();
         // Process the message
         match message {
             DisplayMessage::Text => {
+                indicator.toggle();
                 let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
                 // Only use first DISPLAY_TEXT_BUFFER_LENGTH bytes for text
                 let text_slice = &buf[..DISPLAY_TEXT_BUFFER_LENGTH];
@@ -84,8 +84,10 @@ pub async fn task_display_handler(
                         log::error!("Invalid UTF-8 in text buffer");
                     }
                 }
+                indicator.toggle();
             }
             DisplayMessage::QRCode => {
+                indicator.toggle();
                 let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
                 // Only use first DISPLAY_TEXT_BUFFER_LENGTH bytes for URL
                 let url_slice = &buf[..DISPLAY_TEXT_BUFFER_LENGTH];
@@ -103,6 +105,7 @@ pub async fn task_display_handler(
                         log::error!("Invalid UTF-8 in URL buffer");
                     }
                 }
+                indicator.toggle();
             }
             DisplayMessage::RawBinary => {
                 let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
@@ -114,7 +117,6 @@ pub async fn task_display_handler(
                 }
             }
         }
-        indicator.toggle();
 
         // Rate limit: wait before allowing next display update
         Timer::after(Duration::from_millis(DISPLAY_UPDATE_DELAY_MS)).await;
