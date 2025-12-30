@@ -79,10 +79,6 @@ impl ChunkMeta {
 
 static CHUNK_META: Mutex<CriticalSectionRawMutex, ChunkMeta> = Mutex::new(ChunkMeta::new());
 
-/// Static decode buffer to avoid stack allocation on each chunk
-static DECODE_BUF: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
-    Mutex::new([0u8; MQTT_BUFFER_SIZE]);
-
 /// Process a raw binary chunk from MQTT payload
 /// Decodes, accumulates, and returns true if all chunks are received
 async fn process_chunk(
@@ -90,8 +86,8 @@ async fn process_chunk(
     display_channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
 ) -> Result<bool, &'static str> {
     // Decode chunk data and get metadata
-    let mut decode_buf = DECODE_BUF.lock().await;
-    let (decoded_len, metadata) = decoding::decode_chunk(payload, &mut *decode_buf)?;
+    let mut decode_buf = [0u8; MQTT_BUFFER_SIZE];
+    let (decoded_len, metadata) = decoding::decode_chunk(payload, &mut decode_buf)?;
 
     // Update chunk metadata and write to display buffer
     let mut chunk_meta = CHUNK_META.lock().await;
