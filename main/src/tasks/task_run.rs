@@ -615,6 +615,10 @@ async fn handle_live_mqtt_updates<'a>(
     let mut pending_unsubscribe_all = false;
     let mut topics_changed = false;
 
+    // Rate limiting for live updates
+    let mut min_update_interval_secs: u16 = 0; // 0 = no limit
+    let mut last_update_instant: Option<embassy_time::Instant> = None;
+
     // Subscribe to raw binary data topic
     match client.subscribe_to_topic(raw_topic.as_str()).await {
         Ok(_) => log::info!("Subscribed to topic: {}", raw_topic.as_str()),
@@ -812,6 +816,15 @@ async fn handle_live_mqtt_updates<'a>(
                                     pending_unsubscribe_all = true;
                                 }
 
+                                // Handle min_update_interval setting
+                                if let Some(interval) = config.min_update_interval {
+                                    min_update_interval_secs = interval;
+                                    log::info!(
+                                        "Set minimum update interval to {} seconds",
+                                        interval
+                                    );
+                                }
+
                                 // Send response if required
                                 if config.requires_response {
                                     let response = MqttResponse {
@@ -840,26 +853,51 @@ async fn handle_live_mqtt_updates<'a>(
                     t if dynamic_topics.iter().any(|dt| dt.as_str() == t) => {
                         // Handle messages from dynamically subscribed topics (live updates)
                         log::info!("Received live update from: {}", t);
-                        match process_chunk(payload, display_channel).await {
-                            Ok(send_ack) if send_ack => {
-                                let response = MqttResponse {
-                                    response: MqttResponseStatus::Success,
-                                };
-                                let mut response_buf = [0u8; 32];
-                                let len = serde_json_core::to_slice(&response, &mut response_buf)
-                                    .expect("Failed to serialize response");
-                                client
-                                    .send_message(
-                                        response_topic.as_str(),
-                                        &response_buf[..len],
-                                        rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
-                                        false,
-                                    )
-                                    .await
-                                    .ok();
+
+                        // Check rate limiting
+                        let now = embassy_time::Instant::now();
+                        let should_process = if min_update_interval_secs == 0 {
+                            true // No rate limiting
+                        } else if let Some(last) = last_update_instant {
+                            let elapsed_secs = now.duration_since(last).as_secs();
+                            if elapsed_secs >= min_update_interval_secs as u64 {
+                                true
+                            } else {
+                                log::info!(
+                                    "Rate limited: {} secs since last update, need {} secs",
+                                    elapsed_secs,
+                                    min_update_interval_secs
+                                );
+                                false
                             }
-                            Ok(_) => {}
-                            Err(e) => log::error!("Failed to process live update: {}", e),
+                        } else {
+                            true // First update
+                        };
+
+                        if should_process {
+                            match process_chunk(payload, display_channel).await {
+                                Ok(send_ack) if send_ack => {
+                                    last_update_instant = Some(now);
+                                    let response = MqttResponse {
+                                        response: MqttResponseStatus::Success,
+                                    };
+                                    let mut response_buf = [0u8; 32];
+                                    let len =
+                                        serde_json_core::to_slice(&response, &mut response_buf)
+                                            .expect("Failed to serialize response");
+                                    client
+                                        .send_message(
+                                            response_topic.as_str(),
+                                            &response_buf[..len],
+                                            rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
+                                            false,
+                                        )
+                                        .await
+                                        .ok();
+                                }
+                                Ok(_) => {}
+                                Err(e) => log::error!("Failed to process live update: {}", e),
+                            }
                         }
                     }
                     _ => log::warn!("Received message on unexpected topic: {}", topic),

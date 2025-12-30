@@ -34,7 +34,7 @@ pub struct ChunkMetadata {
 }
 
 /// Config payload for subscribing to additional topics
-/// Expected format: {"subscribe": "topic", "unsubscribe": "topic", "unsubscribe_all": bool, "requires_response": bool}
+/// Expected format: {"subscribe": "topic", "unsubscribe": "topic", "unsubscribe_all": bool, "min_update_interval": u16, "requires_response": bool}
 #[derive(Debug, Deserialize)]
 pub struct ConfigPayload<'a> {
     /// Topic to subscribe to (e.g., "mta/updates", "stocks/AAPL")
@@ -46,6 +46,9 @@ pub struct ConfigPayload<'a> {
     /// Unsubscribe from all dynamic topics
     #[serde(default)]
     pub unsubscribe_all: bool,
+    /// Minimum interval between display updates in seconds (0 = no limit)
+    #[serde(default)]
+    pub min_update_interval: Option<u16>,
     /// Whether the client requires a response
     pub requires_response: bool,
 }
@@ -323,5 +326,49 @@ mod tests {
         let config = parse_config(json).unwrap();
 
         assert_eq!(config.unsubscribe_all, false);
+    }
+
+    #[test]
+    fn test_parse_config_min_update_interval() {
+        let json = br#"{"min_update_interval":30,"requires_response":false}"#;
+
+        let config = parse_config(json).unwrap();
+
+        assert_eq!(config.min_update_interval, Some(30));
+        assert_eq!(config.requires_response, false);
+    }
+
+    #[test]
+    fn test_parse_config_min_update_interval_zero() {
+        // 0 means no rate limiting
+        let json = br#"{"min_update_interval":0,"requires_response":true}"#;
+
+        let config = parse_config(json).unwrap();
+
+        assert_eq!(config.min_update_interval, Some(0));
+        assert_eq!(config.requires_response, true);
+    }
+
+    #[test]
+    fn test_parse_config_min_update_interval_default() {
+        // min_update_interval should default to None when not specified
+        let json = br#"{"subscribe":"mta/updates","requires_response":false}"#;
+
+        let config = parse_config(json).unwrap();
+
+        assert_eq!(config.min_update_interval, None);
+    }
+
+    #[test]
+    fn test_parse_config_all_fields() {
+        let json = br#"{"subscribe":"mta/updates","unsubscribe":"stocks/AAPL","unsubscribe_all":true,"min_update_interval":60,"requires_response":true}"#;
+
+        let config = parse_config(json).unwrap();
+
+        assert_eq!(config.subscribe, Some("mta/updates"));
+        assert_eq!(config.unsubscribe, Some("stocks/AAPL"));
+        assert_eq!(config.unsubscribe_all, true);
+        assert_eq!(config.min_update_interval, Some(60));
+        assert_eq!(config.requires_response, true);
     }
 }
