@@ -39,6 +39,11 @@ const MQTT_CLIENT_ID: &str = "000000";
 const MQTT_TIMEOUT_SECS: u16 = 120;
 /// Max size in bytes of the data being sent via AWS
 pub const MQTT_BUFFER_SIZE: usize = 7_500;
+/// Maximum number of dynamic topic subscriptions
+const MAX_DYNAMIC_TOPICS: usize = 4;
+
+/// Storage size for MQTT topics (must fit in MqttTopics storage area)
+const MQTT_TOPICS_STORAGE_SIZE: usize = 512;
 
 // Static buffers for MQTT to avoid stack overflow
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
@@ -48,6 +53,12 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 static MQTT_TCP_RX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
     Mutex::new([0u8; MQTT_BUFFER_SIZE]);
 static MQTT_TCP_TX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
+    Mutex::new([0u8; MQTT_BUFFER_SIZE]);
+
+static CHUNK_META: Mutex<CriticalSectionRawMutex, ChunkMeta> = Mutex::new(ChunkMeta::new());
+
+/// Static decode buffer to avoid stack allocation on each chunk
+static DECODE_BUF: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
     Mutex::new([0u8; MQTT_BUFFER_SIZE]);
 
 /// Chunk reassembly metadata (no buffer - uses display buffer directly)
@@ -77,63 +88,12 @@ impl ChunkMeta {
     }
 }
 
-static CHUNK_META: Mutex<CriticalSectionRawMutex, ChunkMeta> = Mutex::new(ChunkMeta::new());
-
-/// Static decode buffer to avoid stack allocation on each chunk
-static DECODE_BUF: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
-    Mutex::new([0u8; MQTT_BUFFER_SIZE]);
-
 /// Result of processing a chunk
 struct ProcessChunkResult {
     /// Whether to send an ACK response
     send_ack: bool,
     /// Whether to unsubscribe from all dynamic topics
     unsubscribe_all: bool,
-}
-
-/// Process a raw binary chunk from MQTT payload
-/// Decodes, accumulates, and returns processing result
-async fn process_chunk(
-    payload: &[u8],
-    display_channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
-) -> Result<ProcessChunkResult, &'static str> {
-    // Decode chunk data and get metadata
-    let mut decode_buf = DECODE_BUF.lock().await;
-    let (decoded_len, metadata) = decoding::decode_chunk(payload, &mut *decode_buf)?;
-
-    // Update chunk metadata and write to display buffer
-    let mut chunk_meta = CHUNK_META.lock().await;
-
-    if metadata.chunk_index == 0 {
-        reset_display_buffer();
-        chunk_meta.reset();
-        chunk_meta.total_chunks = metadata.total_chunks;
-    }
-
-    if let Some(written) = append_to_display_buffer(&decode_buf[..decoded_len], chunk_meta.offset) {
-        chunk_meta.offset += written;
-        chunk_meta.received_count += 1;
-    }
-
-    // Check if all chunks received
-    if chunk_meta.is_complete() {
-        log::info!(
-            "All {} chunks received. Queuing {} bytes for display",
-            chunk_meta.total_chunks,
-            chunk_meta.offset
-        );
-        queue_frame_ready(display_channel);
-        chunk_meta.reset();
-        return Ok(ProcessChunkResult {
-            send_ack: true,
-            unsubscribe_all: metadata.unsubscribe_all,
-        });
-    }
-
-    Ok(ProcessChunkResult {
-        send_ack: metadata.requires_response,
-        unsubscribe_all: false, // Only unsubscribe after all chunks received
-    })
 }
 
 /// Display mode for the main task
@@ -162,17 +122,6 @@ struct MqttResponse {
     response: MqttResponseStatus,
 }
 
-/// Maximum number of dynamic topic subscriptions
-const MAX_DYNAMIC_TOPICS: usize = 4;
-
-/// Check if a topic is a reserved core topic that cannot be dynamically subscribed/unsubscribed
-fn is_reserved_topic(topic: &str, raw_topic: &str, config_topic: &str) -> bool {
-    topic == raw_topic || topic == config_topic
-}
-
-/// Storage size for MQTT topics (must fit in MqttTopics storage area)
-const MQTT_TOPICS_STORAGE_SIZE: usize = 512;
-
 /// Serializable MQTT topics for persistent storage
 #[derive(serde::Serialize, serde::Deserialize)]
 struct MqttTopicsData {
@@ -189,147 +138,6 @@ impl MqttTopicsData {
         bincode::serde::decode_from_slice(payload, bincode::config::standard())
             .map(|(data, _)| data)
             .map_err(|_| "Failed to deserialize MQTT topics")
-    }
-}
-
-/// Save dynamic topics to flash storage using bincode
-fn save_mqtt_topics(topics: &heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS>) {
-    let mut storage_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    let data = MqttTopicsData {
-        topics: topics.clone(),
-    };
-
-    let mut encode_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
-    match data.to_bytes(&mut encode_buf) {
-        Ok(len) => {
-            match storage.write_bytes(
-                storage::storage::StorageContents::MqttTopics,
-                0,
-                &encode_buf[..len],
-            ) {
-                Ok(_) => log::info!(
-                    "Saved {} MQTT topics to storage ({} bytes)",
-                    topics.len(),
-                    len
-                ),
-                Err(e) => log::error!("Failed to write MQTT topics: {:?}", e),
-            }
-        }
-        Err(e) => log::error!("Failed to serialize MQTT topics: {}", e),
-    }
-}
-
-/// Load dynamic topics from flash storage using bincode
-fn load_mqtt_topics() -> heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS> {
-    let mut storage_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    match storage.read(storage::storage::StorageContents::MqttTopics) {
-        Ok(data) => {
-            // Check if storage is empty (0xFF means uninitialized)
-            if data[0] == 0xFF {
-                log::info!("No saved MQTT topics found");
-                return heapless::Vec::new();
-            }
-
-            match MqttTopicsData::from_bytes(data) {
-                Ok(mqtt_data) => {
-                    log::info!("Loaded {} MQTT topics from storage", mqtt_data.topics.len());
-                    mqtt_data.topics
-                }
-                Err(e) => {
-                    log::warn!("Failed to parse MQTT topics: {}", e);
-                    heapless::Vec::new()
-                }
-            }
-        }
-        Err(e) => {
-            log::error!("Failed to read MQTT topics: {:?}", e);
-            heapless::Vec::new()
-        }
-    }
-}
-
-/// Save max_cycles setting to flash storage (stored as u16, 2 bytes)
-fn save_max_cycles(cycles: u8) {
-    let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    let bytes = (cycles as u16).to_le_bytes();
-    match storage.write_bytes(
-        storage::storage::StorageContents::MaxCyclesBeforeFullRefresh,
-        0,
-        &bytes,
-    ) {
-        Ok(_) => log::info!("Saved max_cycles to storage: {}", cycles),
-        Err(e) => log::error!("Failed to write max_cycles: {:?}", e),
-    }
-}
-
-/// Load max_cycles setting from flash storage (stored as u16, 2 bytes)
-fn load_max_cycles() -> Option<u8> {
-    let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    match storage.read(storage::storage::StorageContents::MaxCyclesBeforeFullRefresh) {
-        Ok(data) => {
-            // Check if storage is empty (0xFF means uninitialized)
-            if data[0] == 0xFF && data[1] == 0xFF {
-                log::info!("No saved max_cycles found");
-                return None;
-            }
-            let cycles = u16::from_le_bytes([data[0], data[1]]);
-            log::info!("Loaded max_cycles from storage: {}", cycles);
-            Some(cycles as u8)
-        }
-        Err(e) => {
-            log::error!("Failed to read max_cycles: {:?}", e);
-            None
-        }
-    }
-}
-
-/// Save min_update_interval setting to flash storage (stored as u32, 4 bytes)
-fn save_min_update_interval(interval: u16) {
-    let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    let bytes = (interval as u32).to_le_bytes();
-    match storage.write_bytes(
-        storage::storage::StorageContents::MinUpdateInterval,
-        0,
-        &bytes,
-    ) {
-        Ok(_) => log::info!("Saved min_update_interval to storage: {} seconds", interval),
-        Err(e) => log::error!("Failed to write min_update_interval: {:?}", e),
-    }
-}
-
-/// Load min_update_interval setting from flash storage (stored as u32, 4 bytes)
-fn load_min_update_interval() -> Option<u16> {
-    let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    match storage.read(storage::storage::StorageContents::MinUpdateInterval) {
-        Ok(data) => {
-            // Check if storage is empty (0xFF means uninitialized)
-            if data[0] == 0xFF && data[1] == 0xFF && data[2] == 0xFF && data[3] == 0xFF {
-                log::info!("No saved min_update_interval found");
-                return None;
-            }
-            let interval = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-            log::info!(
-                "Loaded min_update_interval from storage: {} seconds",
-                interval
-            );
-            Some(interval as u16)
-        }
-        Err(e) => {
-            log::error!("Failed to read min_update_interval: {:?}", e);
-            None
-        }
     }
 }
 
@@ -988,8 +796,8 @@ async fn handle_live_mqtt_updates<'a>(
                             true // No rate limiting
                         } else if let Some(last) = last_update_instant {
                             let elapsed_secs = now.duration_since(last).as_secs();
-                            let required_secs =
-                                (min_update_interval_secs as u64).saturating_sub(RATE_LIMIT_BUFFER_SECS);
+                            let required_secs = (min_update_interval_secs as u64)
+                                .saturating_sub(RATE_LIMIT_BUFFER_SECS);
                             if elapsed_secs >= required_secs {
                                 true
                             } else {
@@ -1053,6 +861,11 @@ async fn handle_live_mqtt_updates<'a>(
     }
 }
 
+/// Check if a topic is a reserved core topic that cannot be dynamically subscribed/unsubscribed
+fn is_reserved_topic(topic: &str, raw_topic: &str, config_topic: &str) -> bool {
+    topic == raw_topic || topic == config_topic
+}
+
 /// Load WiFi credentials from storage
 fn load_wifi_credentials(
     storage: &mut PersistentStorage<FlashStorage>,
@@ -1107,4 +920,190 @@ fn load_display_url(
             .map_err(|_| "Failed to convert URL to String or URL too long"),
         _ => Err("Storage contains non-URL data"),
     }
+}
+
+/// Load min_update_interval setting from flash storage (stored as u32, 4 bytes)
+fn load_min_update_interval() -> Option<u16> {
+    let mut storage_buf = [0u8; 16];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    match storage.read(storage::storage::StorageContents::MinUpdateInterval) {
+        Ok(data) => {
+            // Check if storage is empty (0xFF means uninitialized)
+            if data[0] == 0xFF && data[1] == 0xFF && data[2] == 0xFF && data[3] == 0xFF {
+                log::info!("No saved min_update_interval found");
+                return None;
+            }
+            let interval = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+            log::info!(
+                "Loaded min_update_interval from storage: {} seconds",
+                interval
+            );
+            Some(interval as u16)
+        }
+        Err(e) => {
+            log::error!("Failed to read min_update_interval: {:?}", e);
+            None
+        }
+    }
+}
+
+/// Load dynamic topics from flash storage using bincode
+fn load_mqtt_topics() -> heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS> {
+    let mut storage_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    match storage.read(storage::storage::StorageContents::MqttTopics) {
+        Ok(data) => {
+            // Check if storage is empty (0xFF means uninitialized)
+            if data[0] == 0xFF {
+                log::info!("No saved MQTT topics found");
+                return heapless::Vec::new();
+            }
+
+            match MqttTopicsData::from_bytes(data) {
+                Ok(mqtt_data) => {
+                    log::info!("Loaded {} MQTT topics from storage", mqtt_data.topics.len());
+                    mqtt_data.topics
+                }
+                Err(e) => {
+                    log::warn!("Failed to parse MQTT topics: {}", e);
+                    heapless::Vec::new()
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to read MQTT topics: {:?}", e);
+            heapless::Vec::new()
+        }
+    }
+}
+
+/// Load max_cycles setting from flash storage (stored as u16, 2 bytes)
+fn load_max_cycles() -> Option<u8> {
+    let mut storage_buf = [0u8; 16];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    match storage.read(storage::storage::StorageContents::MaxCyclesBeforeFullRefresh) {
+        Ok(data) => {
+            // Check if storage is empty (0xFF means uninitialized)
+            if data[0] == 0xFF && data[1] == 0xFF {
+                log::info!("No saved max_cycles found");
+                return None;
+            }
+            let cycles = u16::from_le_bytes([data[0], data[1]]);
+            log::info!("Loaded max_cycles from storage: {}", cycles);
+            Some(cycles as u8)
+        }
+        Err(e) => {
+            log::error!("Failed to read max_cycles: {:?}", e);
+            None
+        }
+    }
+}
+
+/// Save dynamic topics to flash storage using bincode
+fn save_mqtt_topics(topics: &heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS>) {
+    let mut storage_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    let data = MqttTopicsData {
+        topics: topics.clone(),
+    };
+
+    let mut encode_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
+    match data.to_bytes(&mut encode_buf) {
+        Ok(len) => {
+            match storage.write_bytes(
+                storage::storage::StorageContents::MqttTopics,
+                0,
+                &encode_buf[..len],
+            ) {
+                Ok(_) => log::info!(
+                    "Saved {} MQTT topics to storage ({} bytes)",
+                    topics.len(),
+                    len
+                ),
+                Err(e) => log::error!("Failed to write MQTT topics: {:?}", e),
+            }
+        }
+        Err(e) => log::error!("Failed to serialize MQTT topics: {}", e),
+    }
+}
+
+/// Save max_cycles setting to flash storage (stored as u16, 2 bytes)
+fn save_max_cycles(cycles: u8) {
+    let mut storage_buf = [0u8; 16];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    let bytes = (cycles as u16).to_le_bytes();
+    match storage.write_bytes(
+        storage::storage::StorageContents::MaxCyclesBeforeFullRefresh,
+        0,
+        &bytes,
+    ) {
+        Ok(_) => log::info!("Saved max_cycles to storage: {}", cycles),
+        Err(e) => log::error!("Failed to write max_cycles: {:?}", e),
+    }
+}
+
+/// Save min_update_interval setting to flash storage (stored as u32, 4 bytes)
+fn save_min_update_interval(interval: u16) {
+    let mut storage_buf = [0u8; 16];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    let bytes = (interval as u32).to_le_bytes();
+    match storage.write_bytes(
+        storage::storage::StorageContents::MinUpdateInterval,
+        0,
+        &bytes,
+    ) {
+        Ok(_) => log::info!("Saved min_update_interval to storage: {} seconds", interval),
+        Err(e) => log::error!("Failed to write min_update_interval: {:?}", e),
+    }
+}
+
+/// Process a raw binary chunk from MQTT payload
+/// Decodes, accumulates, and returns processing result
+async fn process_chunk(
+    payload: &[u8],
+    display_channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
+) -> Result<ProcessChunkResult, &'static str> {
+    // Decode chunk data and get metadata
+    let mut decode_buf = DECODE_BUF.lock().await;
+    let (decoded_len, metadata) = decoding::decode_chunk(payload, &mut *decode_buf)?;
+
+    // Update chunk metadata and write to display buffer
+    let mut chunk_meta = CHUNK_META.lock().await;
+
+    if metadata.chunk_index == 0 {
+        reset_display_buffer();
+        chunk_meta.reset();
+        chunk_meta.total_chunks = metadata.total_chunks;
+    }
+
+    if let Some(written) = append_to_display_buffer(&decode_buf[..decoded_len], chunk_meta.offset) {
+        chunk_meta.offset += written;
+        chunk_meta.received_count += 1;
+    }
+
+    // Check if all chunks received
+    if chunk_meta.is_complete() {
+        log::info!(
+            "All {} chunks received. Queuing {} bytes for display",
+            chunk_meta.total_chunks,
+            chunk_meta.offset
+        );
+        queue_frame_ready(display_channel);
+        chunk_meta.reset();
+        return Ok(ProcessChunkResult {
+            send_ack: true,
+            unsubscribe_all: metadata.unsubscribe_all,
+        });
+    }
+
+    Ok(ProcessChunkResult {
+        send_ack: metadata.requires_response,
+        unsubscribe_all: false, // Only unsubscribe after all chunks received
+    })
 }
