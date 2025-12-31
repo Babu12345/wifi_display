@@ -197,11 +197,15 @@ pub fn reset_display_buffer() {
 }
 
 /// Signal that the complete frame is ready for display
+/// Returns true if successfully queued, false if channel was full
 pub fn queue_frame_ready(
     channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
-) {
+) -> bool {
     if channel.try_send(DisplayMessage::RawBinary).is_err() {
         log::warn!("Display channel full, frame may be dropped");
+        false
+    } else {
+        true
     }
 }
 

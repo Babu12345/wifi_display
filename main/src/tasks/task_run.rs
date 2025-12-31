@@ -90,8 +90,10 @@ impl ChunkMeta {
 
 /// Result of processing a chunk
 struct ProcessChunkResult {
-    /// Whether to send an ACK response
-    send_ack: bool,
+    /// Whether to send a response (ACK or error)
+    send_response: bool,
+    /// Whether the operation succeeded (true = success, false = error)
+    success: bool,
     /// Whether to unsubscribe from all dynamic topics
     unsubscribe_all: bool,
 }
@@ -641,12 +643,16 @@ async fn handle_live_mqtt_updates<'a>(
 
                 match topic {
                     t if t == raw_topic.as_str() => {
-                        // Process chunk and send ACK if needed
+                        // Process chunk and send response if needed
                         match process_chunk(payload, display_channel).await {
                             Ok(result) => {
-                                if result.send_ack {
+                                if result.send_response {
                                     let response = MqttResponse {
-                                        response: MqttResponseStatus::Success,
+                                        response: if result.success {
+                                            MqttResponseStatus::Success
+                                        } else {
+                                            MqttResponseStatus::Error
+                                        },
                                     };
                                     let mut response_buf = [0u8; 32];
                                     let len =
@@ -657,11 +663,11 @@ async fn handle_live_mqtt_updates<'a>(
                                             response_topic.as_str(),
                                             &response_buf[..len],
                                             rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
-                                            false,
+                                            true,
                                         )
                                         .await
                                     {
-                                        log::warn!("Failed to publish ACK: {:?}", e);
+                                        log::warn!("Failed to publish response: {:?}", e);
                                     }
                                 }
                                 if result.unsubscribe_all {
@@ -774,7 +780,7 @@ async fn handle_live_mqtt_updates<'a>(
                                             response_topic.as_str(),
                                             &response_buf[..len],
                                             rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
-                                            false,
+                                            true,
                                         )
                                         .await
                                     {
@@ -815,10 +821,17 @@ async fn handle_live_mqtt_updates<'a>(
                         if should_process {
                             match process_chunk(payload, display_channel).await {
                                 Ok(result) => {
-                                    if result.send_ack {
-                                        last_update_instant = Some(now);
+                                    if result.send_response {
+                                        // Only update last_update_instant on success
+                                        if result.success {
+                                            last_update_instant = Some(now);
+                                        }
                                         let response = MqttResponse {
-                                            response: MqttResponseStatus::Success,
+                                            response: if result.success {
+                                                MqttResponseStatus::Success
+                                            } else {
+                                                MqttResponseStatus::Error
+                                            },
                                         };
                                         let mut response_buf = [0u8; 32];
                                         let len =
@@ -829,7 +842,7 @@ async fn handle_live_mqtt_updates<'a>(
                                                 response_topic.as_str(),
                                                 &response_buf[..len],
                                                 rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
-                                                false,
+                                                true,
                                             )
                                             .await
                                             .ok();
@@ -1082,9 +1095,18 @@ async fn process_chunk(
         chunk_meta.total_chunks = metadata.total_chunks;
     }
 
-    if let Some(written) = append_to_display_buffer(&decode_buf[..decoded_len], chunk_meta.offset) {
+    // Try to append to display buffer
+    let append_result = append_to_display_buffer(&decode_buf[..decoded_len], chunk_meta.offset);
+    if let Some(written) = append_result {
         chunk_meta.offset += written;
         chunk_meta.received_count += 1;
+    } else {
+        // Buffer was locked - return error if response required
+        return Ok(ProcessChunkResult {
+            send_response: metadata.requires_response,
+            success: false,
+            unsubscribe_all: false,
+        });
     }
 
     // Check if all chunks received
@@ -1094,16 +1116,18 @@ async fn process_chunk(
             chunk_meta.total_chunks,
             chunk_meta.offset
         );
-        queue_frame_ready(display_channel);
+        let queued = queue_frame_ready(display_channel);
         chunk_meta.reset();
         return Ok(ProcessChunkResult {
-            send_ack: true,
+            send_response: true,
+            success: queued,
             unsubscribe_all: metadata.unsubscribe_all,
         });
     }
 
     Ok(ProcessChunkResult {
-        send_ack: metadata.requires_response,
+        send_response: metadata.requires_response,
+        success: true,
         unsubscribe_all: false, // Only unsubscribe after all chunks received
     })
 }
