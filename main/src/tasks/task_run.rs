@@ -574,13 +574,21 @@ async fn handle_live_mqtt_updates<'a>(
                 dynamic_topics.len()
             );
             while let Some(topic) = dynamic_topics.pop() {
+                // Note: unsubscribe may return ImplementationSpecificError if a message arrives
+                // during the operation. This is benign - the broker still processes the unsubscribe.
                 match client.unsubscribe_from_topic(topic.as_str()).await {
                     Ok(_) => {
                         log::info!("Unsubscribed from: {}", topic.as_str());
-                        topics_changed = true;
                     }
-                    Err(e) => log::error!("Failed to unsubscribe from {}: {:?}", topic.as_str(), e),
+                    Err(e) => {
+                        log::info!(
+                            "Unsubscribe from {} returned {:?} (topic still removed)",
+                            topic.as_str(),
+                            e
+                        );
+                    }
                 }
+                topics_changed = true;
             }
         }
         if let Some(topic) = pending_unsubscribe.take() {
@@ -591,11 +599,17 @@ async fn handle_live_mqtt_updates<'a>(
                 match client.unsubscribe_from_topic(topic.as_str()).await {
                     Ok(_) => {
                         log::info!("Unsubscribed from: {}", topic.as_str());
-                        dynamic_topics.remove(pos);
-                        topics_changed = true;
                     }
-                    Err(e) => log::error!("Failed to unsubscribe: {:?}", e),
+                    Err(e) => {
+                        log::info!(
+                            "Unsubscribe from {} returned {:?} (topic still removed)",
+                            topic.as_str(),
+                            e
+                        );
+                    }
                 }
+                dynamic_topics.remove(pos);
+                topics_changed = true;
             }
         }
         if let Some(topic) = pending_subscribe.take() {
