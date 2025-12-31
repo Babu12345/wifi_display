@@ -981,19 +981,22 @@ async fn handle_live_mqtt_updates<'a>(
                         // Handle messages from dynamically subscribed topics (live updates)
                         log::info!("Received live update from: {}", t);
 
-                        // Check rate limiting
+                        // Check rate limiting (with 4 second buffer for drift/accuracy)
+                        const RATE_LIMIT_BUFFER_SECS: u64 = 4;
                         let now = embassy_time::Instant::now();
                         let should_process = if min_update_interval_secs == 0 {
                             true // No rate limiting
                         } else if let Some(last) = last_update_instant {
                             let elapsed_secs = now.duration_since(last).as_secs();
-                            if elapsed_secs >= min_update_interval_secs as u64 {
+                            let required_secs =
+                                (min_update_interval_secs as u64).saturating_sub(RATE_LIMIT_BUFFER_SECS);
+                            if elapsed_secs >= required_secs {
                                 true
                             } else {
                                 log::info!(
                                     "Rate limited: {} secs since last update, need {} secs",
                                     elapsed_secs,
-                                    min_update_interval_secs
+                                    required_secs
                                 );
                                 false
                             }
