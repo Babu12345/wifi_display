@@ -83,12 +83,20 @@ static CHUNK_META: Mutex<CriticalSectionRawMutex, ChunkMeta> = Mutex::new(ChunkM
 static DECODE_BUF: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
     Mutex::new([0u8; MQTT_BUFFER_SIZE]);
 
+/// Result of processing a chunk
+struct ProcessChunkResult {
+    /// Whether to send an ACK response
+    send_ack: bool,
+    /// Whether to unsubscribe from all dynamic topics
+    unsubscribe_all: bool,
+}
+
 /// Process a raw binary chunk from MQTT payload
-/// Decodes, accumulates, and returns true if all chunks are received
+/// Decodes, accumulates, and returns processing result
 async fn process_chunk(
     payload: &[u8],
     display_channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
-) -> Result<bool, &'static str> {
+) -> Result<ProcessChunkResult, &'static str> {
     // Decode chunk data and get metadata
     let mut decode_buf = DECODE_BUF.lock().await;
     let (decoded_len, metadata) = decoding::decode_chunk(payload, &mut *decode_buf)?;
@@ -116,10 +124,16 @@ async fn process_chunk(
         );
         queue_frame_ready(display_channel);
         chunk_meta.reset();
-        return Ok(true);
+        return Ok(ProcessChunkResult {
+            send_ack: true,
+            unsubscribe_all: metadata.unsubscribe_all,
+        });
     }
 
-    Ok(metadata.requires_response)
+    Ok(ProcessChunkResult {
+        send_ack: metadata.requires_response,
+        unsubscribe_all: false, // Only unsubscribe after all chunks received
+    })
 }
 
 /// Display mode for the main task
@@ -821,26 +835,34 @@ async fn handle_live_mqtt_updates<'a>(
                     t if t == raw_topic.as_str() => {
                         // Process chunk and send ACK if needed
                         match process_chunk(payload, display_channel).await {
-                            Ok(send_ack) if send_ack => {
-                                let response = MqttResponse {
-                                    response: MqttResponseStatus::Success,
-                                };
-                                let mut response_buf = [0u8; 32];
-                                let len = serde_json_core::to_slice(&response, &mut response_buf)
-                                    .expect("Failed to serialize response");
-                                if let Err(e) = client
-                                    .send_message(
-                                        response_topic.as_str(),
-                                        &response_buf[..len],
-                                        rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
-                                        false,
-                                    )
-                                    .await
-                                {
-                                    log::warn!("Failed to publish ACK: {:?}", e);
+                            Ok(result) => {
+                                if result.send_ack {
+                                    let response = MqttResponse {
+                                        response: MqttResponseStatus::Success,
+                                    };
+                                    let mut response_buf = [0u8; 32];
+                                    let len =
+                                        serde_json_core::to_slice(&response, &mut response_buf)
+                                            .expect("Failed to serialize response");
+                                    if let Err(e) = client
+                                        .send_message(
+                                            response_topic.as_str(),
+                                            &response_buf[..len],
+                                            rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
+                                            false,
+                                        )
+                                        .await
+                                    {
+                                        log::warn!("Failed to publish ACK: {:?}", e);
+                                    }
+                                }
+                                if result.unsubscribe_all {
+                                    log::info!(
+                                        "Queuing unsubscribe from all dynamic topics (from raw payload)"
+                                    );
+                                    pending_unsubscribe_all = true;
                                 }
                             }
-                            Ok(_) => {} // No ACK needed
                             Err(e) => log::error!("Failed to process chunk: {}", e),
                         }
                     }
@@ -981,26 +1003,33 @@ async fn handle_live_mqtt_updates<'a>(
 
                         if should_process {
                             match process_chunk(payload, display_channel).await {
-                                Ok(send_ack) if send_ack => {
-                                    last_update_instant = Some(now);
-                                    let response = MqttResponse {
-                                        response: MqttResponseStatus::Success,
-                                    };
-                                    let mut response_buf = [0u8; 32];
-                                    let len =
-                                        serde_json_core::to_slice(&response, &mut response_buf)
-                                            .expect("Failed to serialize response");
-                                    client
-                                        .send_message(
-                                            response_topic.as_str(),
-                                            &response_buf[..len],
-                                            rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
-                                            false,
-                                        )
-                                        .await
-                                        .ok();
+                                Ok(result) => {
+                                    if result.send_ack {
+                                        last_update_instant = Some(now);
+                                        let response = MqttResponse {
+                                            response: MqttResponseStatus::Success,
+                                        };
+                                        let mut response_buf = [0u8; 32];
+                                        let len =
+                                            serde_json_core::to_slice(&response, &mut response_buf)
+                                                .expect("Failed to serialize response");
+                                        client
+                                            .send_message(
+                                                response_topic.as_str(),
+                                                &response_buf[..len],
+                                                rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
+                                                false,
+                                            )
+                                            .await
+                                            .ok();
+                                    }
+                                    if result.unsubscribe_all {
+                                        log::info!(
+                                            "Queuing unsubscribe from all dynamic topics (from live update)"
+                                        );
+                                        pending_unsubscribe_all = true;
+                                    }
                                 }
-                                Ok(_) => {}
                                 Err(e) => log::error!("Failed to process live update: {}", e),
                             }
                         }

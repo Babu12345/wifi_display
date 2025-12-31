@@ -7,7 +7,7 @@ use base64ct::{Base64, Encoding};
 use serde::Deserialize;
 
 /// JSON payload structure for raw binary display data
-/// Expected format: {"frame": "base64_encoded_string", "requires_response": true/false, "chunk_index": 0, "total_chunks": 1}
+/// Expected format: {"frame": "base64_encoded_string", "requires_response": true/false, "chunk_index": 0, "total_chunks": 1, "unsubscribe_all": false}
 /// The frame data is base64-encoded raw frame data chunk
 #[derive(Deserialize, Debug, Clone, Copy)]
 pub struct BinaryPayload<'a> {
@@ -20,6 +20,9 @@ pub struct BinaryPayload<'a> {
     pub chunk_index: usize,
     /// Total number of chunks
     pub total_chunks: usize,
+    /// Unsubscribe from all dynamic topics after displaying this frame
+    #[serde(default)]
+    pub unsubscribe_all: bool,
 }
 
 /// Metadata about a chunk extracted from JSON payload
@@ -31,6 +34,8 @@ pub struct ChunkMetadata {
     pub chunk_index: usize,
     /// Total number of chunks
     pub total_chunks: usize,
+    /// Unsubscribe from all dynamic topics after displaying this frame
+    pub unsubscribe_all: bool,
 }
 
 /// Config payload for subscribing to additional topics
@@ -92,6 +97,7 @@ fn parse_binary_payload(json_data: &[u8]) -> Result<(BinaryPayload<'_>, ChunkMet
         requires_response: parsed.requires_response,
         chunk_index: parsed.chunk_index,
         total_chunks: parsed.total_chunks,
+        unsubscribe_all: parsed.unsubscribe_all,
     };
 
     Ok((parsed, metadata))
