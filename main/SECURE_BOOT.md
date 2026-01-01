@@ -108,11 +108,146 @@ espsecure.py sign_data --version 2 --keyfile secure_boot_signing_key.pem app.bin
 esptool.py --chip esp32c3 write_flash 0x10000 app.bin
 ```
 
-## Optional: Flash Encryption
+---
 
-For complete security, also enable **Flash Encryption** to prevent reading firmware from the chip. This is configured alongside Secure Boot in menuconfig under Security features.
+# Flash Encryption
+
+Flash Encryption prevents reading firmware from the chip. Combined with Secure Boot, this provides complete protection against both unauthorized firmware and firmware extraction.
+
+## Critical Warnings
+
+**Power interruption during first boot encryption will CORRUPT the flash** - do not interrupt power while encryption is running (can take up to 1 minute for large partitions).
+
+**No key recovery** - the encryption key is stored in eFuse and cannot be read by software. If you use device-generated keys, there's no way to decrypt the flash contents externally.
+
+## Development vs Release Mode
+
+| Feature | Development Mode | Release Mode |
+|---------|-----------------|--------------|
+| Re-flash plaintext | Yes (bootloader encrypts) | No |
+| UART download | Allowed | Disabled |
+| Disable encryption | Once (burn eFuse) | Never |
+| Use case | Testing | Production |
+
+**Development Mode**: Allows repeated plaintext flashing - bootloader encrypts on-device. Can disable encryption once by burning `SPI_BOOT_CRYPT_CNT` eFuse.
+
+**Release Mode**: Permanently disables plaintext UART flashing. Updates only via OTA. This is the secure production setting.
+
+## Step 1: Generate Encryption Key (Optional)
+
+You can let the device generate its own key (recommended for production), or generate one yourself:
+
+```bash
+# Generate your own key (allows external decryption if needed)
+idf.py secure-generate-flash-encryption-key flash_encryption_key.bin
+
+# Burn the key to eFuse BEFORE first encrypted boot
+idf.py --port /dev/ttyUSB0 efuse-burn-key BLOCK_KEY0 flash_encryption_key.bin XTS_AES_128_KEY
+```
+
+**For production**: Use device-generated keys (more secure) or generate unique keys per device.
+
+## Step 2: Configure in menuconfig
+
+When building the bootloader (same project as Secure Boot):
+
+```bash
+idf.py menuconfig
+```
+
+Configure:
+- **Security features → Enable flash encryption on boot** → Yes
+- **Security features → Enable usage mode** → `Development` (for testing) or `Release` (for production)
+- **Security features → UART ROM download mode** → Match your Secure Boot setting
+
+**Note**: Enabling flash encryption increases bootloader size. You may need to adjust partition table offset.
+
+## Step 3: Flash and First Boot
+
+```bash
+# Flash plaintext images (bootloader will encrypt on first boot)
+idf.py flash
+
+# Monitor the encryption process
+idf.py monitor
+```
+
+On first boot:
+1. Bootloader generates/uses encryption key
+2. Encrypts all partitions marked for encryption
+3. Burns `SPI_BOOT_CRYPT_CNT` eFuse to enable encryption
+4. Burns protective eFuses (disables JTAG, direct boot, etc.)
+
+**This can take up to 1 minute - DO NOT power off!**
+
+## Future Updates
+
+### Development Mode
+
+```bash
+# Build your Rust app
+cargo build --release
+
+# Convert to binary
+espflash save-image --chip esp32c3 target/riscv32imc-unknown-none-elf/release/main app.bin
+
+# Sign (if using Secure Boot)
+espsecure.py sign_data --version 2 --keyfile secure_boot_signing_key.pem app.bin
+
+# Flash - bootloader will encrypt automatically
+esptool.py --chip esp32c3 write_flash 0x10000 app.bin
+```
+
+### Release Mode
+
+In Release mode, you must use **OTA updates** or pre-encrypt the binary:
+
+```bash
+# Pre-encrypt the binary (requires your encryption key)
+espsecure.py encrypt_flash_data --aes_xts --keyfile flash_encryption_key.bin \
+    --address 0x10000 --output app-encrypted.bin app.bin
+
+# Flash the pre-encrypted binary
+esptool.py --chip esp32c3 write_flash 0x10000 app-encrypted.bin
+```
+
+## eFuses Burned by Flash Encryption
+
+| eFuse | Effect |
+|-------|--------|
+| `BLOCK_KEYN` | Stores 256-bit AES encryption key |
+| `SPI_BOOT_CRYPT_CNT` | Enables encryption (odd bit count = enabled) |
+| `DIS_DOWNLOAD_ICACHE` | Disables instruction cache in download mode |
+| `DIS_PAD_JTAG` | Disables JTAG via pads |
+| `DIS_USB_JTAG` | Disables JTAG via USB |
+| `DIS_DIRECT_BOOT` | Disables direct boot mode |
+
+## Troubleshooting
+
+**"flash read err, 1000" or continuous reboot**: You flashed plaintext to an encrypted device. In Development mode, the bootloader should re-encrypt. In Release mode, the device is soft-bricked.
+
+**"invalid header"**: Encryption mismatch between bootloader expectation and flash contents.
+
+## Combined Secure Boot + Flash Encryption
+
+When using both together:
+
+1. Configure both in menuconfig before first flash
+2. Generate/specify keys for both features
+3. Flash and let first boot enable both
+4. For updates: sign first, then encrypt (or let bootloader encrypt in dev mode)
+
+```bash
+# Full secure build and flash workflow
+cargo build --release
+espflash save-image --chip esp32c3 target/riscv32imc-unknown-none-elf/release/main app.bin
+espsecure.py sign_data --version 2 --keyfile secure_boot_signing_key.pem app.bin
+# In dev mode, just flash - bootloader encrypts
+esptool.py --chip esp32c3 write_flash 0x10000 app.bin
+```
 
 ## References
 
 - [ESP32-C3 Secure Boot V2 Documentation](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/security/secure-boot-v2.html)
+- [ESP32-C3 Flash Encryption Documentation](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/security/flash-encryption.html)
 - [ESP-IDF Security Features](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/security/secure-boot-v2.html)
