@@ -27,6 +27,48 @@ APP_ENCRYPTED="${SCRIPT_DIR}/app-encrypted.bin"
 # Flash addresses
 APP_OFFSET="0x10000"
 
+# Serial port detection - user can override with PORT env var
+detect_ports() {
+    local ports=()
+    # macOS ports
+    for port in /dev/cu.usbserial-* /dev/cu.usbmodem* /dev/cu.wchusbserial*; do
+        [ -e "$port" ] && ports+=("$port")
+    done
+    # Linux ports
+    for port in /dev/ttyUSB* /dev/ttyACM*; do
+        [ -e "$port" ] && ports+=("$port")
+    done
+    echo "${ports[@]}"
+}
+
+if [ -z "$PORT" ]; then
+    AVAILABLE_PORTS=($(detect_ports))
+    if [ ${#AVAILABLE_PORTS[@]} -eq 0 ]; then
+        echo -e "${RED}Error: No ESP32 serial port detected${NC}"
+        echo "Make sure the device is connected and try again."
+        echo "You can also specify the port manually: PORT=/dev/cu.usbserial-XXX ./secure-flash.sh"
+        exit 1
+    elif [ ${#AVAILABLE_PORTS[@]} -eq 1 ]; then
+        PORT="${AVAILABLE_PORTS[0]}"
+        echo -e "${CYAN}Using serial port: ${PORT}${NC}"
+    else
+        echo -e "${CYAN}Multiple serial ports detected:${NC}"
+        for i in "${!AVAILABLE_PORTS[@]}"; do
+            echo "  $((i+1)). ${AVAILABLE_PORTS[$i]}"
+        done
+        read -p "Select port number [1-${#AVAILABLE_PORTS[@]}]: " port_choice
+        if [[ "$port_choice" =~ ^[0-9]+$ ]] && [ "$port_choice" -ge 1 ] && [ "$port_choice" -le ${#AVAILABLE_PORTS[@]} ]; then
+            PORT="${AVAILABLE_PORTS[$((port_choice-1))]}"
+        else
+            echo -e "${RED}Invalid selection${NC}"
+            exit 1
+        fi
+        echo -e "${CYAN}Using serial port: ${PORT}${NC}"
+    fi
+else
+    echo -e "${CYAN}Using serial port: ${PORT}${NC}"
+fi
+
 # Bootloader paths (from esp-idf secure_bootloader project)
 BOOTLOADER_DIR="${PARENT_DIR}/esp-idf/secure_bootloader"
 BOOTLOADER_BIN="${BOOTLOADER_DIR}/build/bootloader/bootloader.bin"
@@ -101,7 +143,7 @@ if [ "$1" == "--init" ]; then
     # Step 1: Burn encryption key to eFuse
     echo -e "${YELLOW}[1/8] Burning encryption key to eFuse...${NC}"
     echo -e "${RED}This step is IRREVERSIBLE!${NC}"
-    espefuse.py --chip esp32c3 burn_key BLOCK_KEY0 "$ENCRYPTION_KEY" XTS_AES_128_KEY
+    espefuse.py --chip esp32c3 --port "$PORT" burn_key BLOCK_KEY0 "$ENCRYPTION_KEY" XTS_AES_128_KEY
 
     # Step 2: Build Rust app
     echo -e "${YELLOW}[2/8] Building release binary...${NC}"
@@ -122,15 +164,15 @@ if [ "$1" == "--init" ]; then
 
     # Step 6: Flash bootloader
     echo -e "${YELLOW}[6/8] Flashing secure bootloader...${NC}"
-    esptool.py --chip esp32c3 write_flash 0x0 "$BOOTLOADER_BIN"
+    esptool.py --chip esp32c3 --port "$PORT" write_flash 0x0 "$BOOTLOADER_BIN"
 
     # Step 7: Flash partition table
     echo -e "${YELLOW}[7/8] Flashing partition table...${NC}"
-    esptool.py --chip esp32c3 write_flash 0x8000 "$PARTITION_TABLE"
+    esptool.py --chip esp32c3 --port "$PORT" write_flash 0x8000 "$PARTITION_TABLE"
 
     # Step 8: Flash encrypted app
     echo -e "${YELLOW}[8/8] Flashing encrypted application...${NC}"
-    esptool.py --chip esp32c3 write_flash "$APP_OFFSET" "$APP_ENCRYPTED"
+    esptool.py --chip esp32c3 --port "$PORT" write_flash "$APP_OFFSET" "$APP_ENCRYPTED"
 
     echo -e "${GREEN}=== Initial setup complete! ===${NC}"
     echo -e "${YELLOW}On first boot, the device will:${NC}"
@@ -166,7 +208,7 @@ else
 
     # Step 5: Flash encrypted binary
     echo -e "${YELLOW}[5/5] Flashing encrypted binary...${NC}"
-    esptool.py --chip esp32c3 write_flash "$APP_OFFSET" "$APP_ENCRYPTED"
+    esptool.py --chip esp32c3 --port "$PORT" write_flash "$APP_OFFSET" "$APP_ENCRYPTED"
 
     echo -e "${GREEN}=== Flash complete! ===${NC}"
 fi
