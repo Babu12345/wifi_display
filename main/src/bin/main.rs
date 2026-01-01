@@ -4,6 +4,45 @@
 use core::cell::RefCell;
 use core::panic::PanicInfo;
 
+/// ESP-IDF app descriptor for bootloader compatibility.
+/// This structure must be at the start of the DROM segment for Secure Boot V2.
+/// Layout matches esp_app_desc_t from ESP-IDF.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EspAppDesc {
+    magic_word: u32,         // 0xABCD5432
+    secure_version: u32,     // 0
+    reserv1: [u32; 2],       // reserved
+    version: [u8; 32],       // app version string
+    project_name: [u8; 32],  // project name
+    time: [u8; 16],          // build time
+    date: [u8; 16],          // build date
+    idf_ver: [u8; 32],       // IDF version
+    app_elf_sha256: [u8; 32], // SHA256 of ELF
+    reserv2: [u32; 18],      // reserved
+    min_efuse_blk_rev_full: u16, // minimum efuse block revision
+    max_efuse_blk_rev_full: u16, // maximum efuse block revision
+    reserv3: u32,            // reserved
+}
+
+#[used]
+#[unsafe(link_section = ".rodata_desc")]
+static ESP_APP_DESC: EspAppDesc = EspAppDesc {
+    magic_word: 0xABCD5432,
+    secure_version: 0,
+    reserv1: [0; 2],
+    version: *b"0.1.0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+    project_name: *b"wifi_display\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+    time: *b"00:00:00\0\0\0\0\0\0\0\0",
+    date: *b"Jan  1 2026\0\0\0\0\0",
+    idf_ver: *b"v0.0.0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+    app_elf_sha256: [0; 32],
+    reserv2: [0; 18],
+    min_efuse_blk_rev_full: 0,      // Accept any efuse revision
+    max_efuse_blk_rev_full: 0xFFFF, // Accept any efuse revision
+    reserv3: 0,
+};
+
 use display::{DisplayBuilder, EPD417, EPD417_SIZE};
 use embassy_executor::Spawner;
 use embassy_net::StackResources;

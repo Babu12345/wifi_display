@@ -1,4 +1,4 @@
-# ESP32-C3 Partition Table for Secure Boot V2 + Flash Encryption
+# ESP32-C3 Partition Table for Secure Boot V2
 # Partition table offset: 0x10000 (configured in menuconfig)
 # App starts at 0x20000 to accommodate secure bootloader
 # Name,   Type, SubType, Offset,   Size,     Flags
