@@ -1,10 +1,15 @@
 #!/bin/bash
-# Secure Boot Flash Script
-# Builds, signs, and flashes firmware for secure boot enabled devices
+# Secure Boot + Flash Encryption Flash Script (Release Mode)
+# Builds, signs, encrypts, and flashes firmware for secure boot enabled devices
+#
+# Prerequisites:
+#   - Build bootloader with Secure Boot V2 AND Flash Encryption (Release mode) in menuconfig
+#   - Generate signing key: espsecure.py generate_signing_key --version 2 secure_boot_signing_key.pem
+#   - Generate encryption key: espsecure.py generate_flash_encryption_key flash_encryption_key.bin
 #
 # Usage:
-#   ./secure-flash.sh          - Normal update (build, sign, flash app only)
-#   ./secure-flash.sh --init   - First time setup (flash bootloader, partition table, and app)
+#   ./secure-flash.sh          - Normal update (build, sign, encrypt, flash app)
+#   ./secure-flash.sh --init   - First time setup (burns keys, flash bootloader, partition table, and app)
 
 set -e  # Exit on error
 
@@ -12,13 +17,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
 VENV_DIR="${PARENT_DIR}/.venv"
 SIGNING_KEY="${PARENT_DIR}/secure_boot_signing_key.pem"
+ENCRYPTION_KEY="${PARENT_DIR}/flash_encryption_key.bin"
 TARGET_DIR="${SCRIPT_DIR}/target/riscv32imc-unknown-none-elf/release"
 BINARY_NAME="main"
 APP_BIN="${SCRIPT_DIR}/app.bin"
 APP_SIGNED="${SCRIPT_DIR}/app-signed.bin"
+APP_ENCRYPTED="${SCRIPT_DIR}/app-encrypted.bin"
+
+# Flash addresses
+APP_OFFSET="0x10000"
 
 # Bootloader paths (from esp-idf secure_bootloader project)
-BOOTLOADER_DIR="${SCRIPT_DIR}/../esp-idf/secure_bootloader"
+BOOTLOADER_DIR="${PARENT_DIR}/esp-idf/secure_bootloader"
 BOOTLOADER_BIN="${BOOTLOADER_DIR}/build/bootloader/bootloader.bin"
 PARTITION_TABLE="${BOOTLOADER_DIR}/build/partition_table/partition-table.bin"
 
@@ -46,11 +56,25 @@ if [ ! -f "$SIGNING_KEY" ]; then
     exit 1
 fi
 
+# Check if encryption key exists
+if [ ! -f "$ENCRYPTION_KEY" ]; then
+    echo -e "${RED}Error: Encryption key not found at ${ENCRYPTION_KEY}${NC}"
+    echo "Generate one with: espsecure.py generate_flash_encryption_key flash_encryption_key.bin"
+    exit 1
+fi
+
 # Check for --init flag (first time setup)
 if [ "$1" == "--init" ]; then
-    echo -e "${GREEN}=== Secure Boot Initial Setup ===${NC}"
-    echo -e "${RED}WARNING: This will enable Secure Boot on first device boot!${NC}"
-    echo -e "${RED}This is IRREVERSIBLE. Make sure you have backed up your signing key.${NC}"
+    echo -e "${GREEN}=== Secure Boot + Flash Encryption Initial Setup (Release Mode) ===${NC}"
+    echo -e "${RED}WARNING: This will enable Secure Boot AND Flash Encryption!${NC}"
+    echo -e "${RED}This is IRREVERSIBLE:${NC}"
+    echo -e "${RED}  - Encryption key will be burned to eFuse${NC}"
+    echo -e "${RED}  - Only signed firmware will run${NC}"
+    echo -e "${RED}  - Flash contents will be encrypted${NC}"
+    echo -e "${RED}  - UART flashing of plaintext binaries will be PERMANENTLY DISABLED${NC}"
+    echo -e "${RED}  - JTAG will be permanently disabled${NC}"
+    echo -e "${RED}Make sure you have backed up your signing key AND encryption key!${NC}"
+    echo ""
     read -p "Are you sure you want to continue? (yes/no): " confirm
     if [ "$confirm" != "yes" ]; then
         echo "Aborted."
@@ -74,55 +98,75 @@ if [ "$1" == "--init" ]; then
         exit 1
     fi
 
-    # Step 1: Build Rust app
-    echo -e "${YELLOW}[1/6] Building release binary...${NC}"
+    # Step 1: Burn encryption key to eFuse
+    echo -e "${YELLOW}[1/8] Burning encryption key to eFuse...${NC}"
+    echo -e "${RED}This step is IRREVERSIBLE!${NC}"
+    espefuse.py --chip esp32c3 burn_key BLOCK_KEY0 "$ENCRYPTION_KEY" XTS_AES_128_KEY
+
+    # Step 2: Build Rust app
+    echo -e "${YELLOW}[2/8] Building release binary...${NC}"
     cargo build --release
 
-    # Step 2: Convert to flashable binary
-    echo -e "${YELLOW}[2/6] Converting to flashable binary...${NC}"
+    # Step 3: Convert to flashable binary
+    echo -e "${YELLOW}[3/8] Converting to flashable binary...${NC}"
     espflash save-image --chip esp32c3 "${TARGET_DIR}/${BINARY_NAME}" "$APP_BIN"
 
-    # Step 3: Sign the binary
-    echo -e "${YELLOW}[3/6] Signing binary with secure boot key...${NC}"
+    # Step 4: Sign the binary
+    echo -e "${YELLOW}[4/8] Signing binary with secure boot key...${NC}"
     espsecure.py sign_data --version 2 --keyfile "$SIGNING_KEY" --output "$APP_SIGNED" "$APP_BIN"
 
-    # Step 4: Flash bootloader
-    echo -e "${YELLOW}[4/6] Flashing secure bootloader...${NC}"
+    # Step 5: Encrypt the signed binary
+    echo -e "${YELLOW}[5/8] Encrypting binary with flash encryption key...${NC}"
+    espsecure.py encrypt_flash_data --aes_xts --keyfile "$ENCRYPTION_KEY" \
+        --address "$APP_OFFSET" --output "$APP_ENCRYPTED" "$APP_SIGNED"
+
+    # Step 6: Flash bootloader
+    echo -e "${YELLOW}[6/8] Flashing secure bootloader...${NC}"
     esptool.py --chip esp32c3 write_flash 0x0 "$BOOTLOADER_BIN"
 
-    # Step 5: Flash partition table
-    echo -e "${YELLOW}[5/6] Flashing partition table...${NC}"
+    # Step 7: Flash partition table
+    echo -e "${YELLOW}[7/8] Flashing partition table...${NC}"
     esptool.py --chip esp32c3 write_flash 0x8000 "$PARTITION_TABLE"
 
-    # Step 6: Flash app
-    echo -e "${YELLOW}[6/6] Flashing signed application...${NC}"
-    esptool.py --chip esp32c3 write_flash 0x10000 "$APP_SIGNED"
+    # Step 8: Flash encrypted app
+    echo -e "${YELLOW}[8/8] Flashing encrypted application...${NC}"
+    esptool.py --chip esp32c3 write_flash "$APP_OFFSET" "$APP_ENCRYPTED"
 
     echo -e "${GREEN}=== Initial setup complete! ===${NC}"
     echo -e "${YELLOW}On first boot, the device will:${NC}"
-    echo "  1. Burn the public key digest into eFuse"
+    echo "  1. Burn the secure boot public key digest into eFuse"
     echo "  2. Enable SECURE_BOOT_EN eFuse"
-    echo "  3. Disable JTAG"
-    echo -e "${RED}After this, only signed firmware will run on this device.${NC}"
+    echo "  3. Enable flash encryption using the burned key"
+    echo "  4. Disable JTAG permanently"
+    echo "  5. Disable plaintext UART flashing permanently"
+    echo -e "${RED}After this:${NC}"
+    echo -e "${RED}  - Only signed AND encrypted firmware can be flashed${NC}"
+    echo -e "${RED}  - Flash contents cannot be read externally${NC}"
+    echo -e "${RED}  - Future updates require pre-encryption with your key${NC}"
 
 else
-    echo -e "${GREEN}=== Secure Boot Flash Script ===${NC}"
+    echo -e "${GREEN}=== Secure Boot + Flash Encryption Update (Release Mode) ===${NC}"
 
     # Step 1: Build
-    echo -e "${YELLOW}[1/4] Building release binary...${NC}"
+    echo -e "${YELLOW}[1/5] Building release binary...${NC}"
     cargo build --release
 
     # Step 2: Convert to flashable binary
-    echo -e "${YELLOW}[2/4] Converting to flashable binary...${NC}"
+    echo -e "${YELLOW}[2/5] Converting to flashable binary...${NC}"
     espflash save-image --chip esp32c3 "${TARGET_DIR}/${BINARY_NAME}" "$APP_BIN"
 
     # Step 3: Sign the binary
-    echo -e "${YELLOW}[3/4] Signing binary with secure boot key...${NC}"
+    echo -e "${YELLOW}[3/5] Signing binary with secure boot key...${NC}"
     espsecure.py sign_data --version 2 --keyfile "$SIGNING_KEY" --output "$APP_SIGNED" "$APP_BIN"
 
-    # Step 4: Flash
-    echo -e "${YELLOW}[4/4] Flashing signed binary...${NC}"
-    esptool.py --chip esp32c3 write_flash 0x10000 "$APP_SIGNED"
+    # Step 4: Encrypt the signed binary
+    echo -e "${YELLOW}[4/5] Encrypting binary with flash encryption key...${NC}"
+    espsecure.py encrypt_flash_data --aes_xts --keyfile "$ENCRYPTION_KEY" \
+        --address "$APP_OFFSET" --output "$APP_ENCRYPTED" "$APP_SIGNED"
+
+    # Step 5: Flash encrypted binary
+    echo -e "${YELLOW}[5/5] Flashing encrypted binary...${NC}"
+    esptool.py --chip esp32c3 write_flash "$APP_OFFSET" "$APP_ENCRYPTED"
 
     echo -e "${GREEN}=== Flash complete! ===${NC}"
 fi
