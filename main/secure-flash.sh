@@ -24,8 +24,9 @@ APP_BIN="${SCRIPT_DIR}/app.bin"
 APP_SIGNED="${SCRIPT_DIR}/app-signed.bin"
 APP_ENCRYPTED="${SCRIPT_DIR}/app-encrypted.bin"
 
-# Flash addresses
-APP_OFFSET="0x10000"
+# Flash addresses (must match partition table in menuconfig)
+PARTITION_TABLE_OFFSET="0x10000"
+APP_OFFSET="0x20000"
 
 # Serial port detection - user can override with PORT env var
 detect_ports() {
@@ -168,7 +169,7 @@ if [ "$1" == "--init" ]; then
 
     # Step 7: Flash partition table
     echo -e "${YELLOW}[7/8] Flashing partition table...${NC}"
-    esptool.py --chip esp32c3 --port "$PORT" write_flash 0x8000 "$PARTITION_TABLE"
+    esptool.py --chip esp32c3 --port "$PORT" write_flash "$PARTITION_TABLE_OFFSET" "$PARTITION_TABLE"
 
     # Step 8: Flash encrypted app
     echo -e "${YELLOW}[8/8] Flashing encrypted application...${NC}"
