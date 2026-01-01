@@ -4,6 +4,7 @@
 /Cargo.lock
 /.venv
 /esp-idf
+*.bin
 
 # Certificates
 main/src/certificates/*.pem

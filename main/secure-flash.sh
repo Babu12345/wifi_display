@@ -11,10 +11,11 @@ set -e  # Exit on error
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
 VENV_DIR="${PARENT_DIR}/.venv"
-SIGNING_KEY="${SCRIPT_DIR}/secure_boot_signing_key.pem"
+SIGNING_KEY="${PARENT_DIR}/secure_boot_signing_key.pem"
 TARGET_DIR="${SCRIPT_DIR}/target/riscv32imc-unknown-none-elf/release"
 BINARY_NAME="main"
 APP_BIN="${SCRIPT_DIR}/app.bin"
+APP_SIGNED="${SCRIPT_DIR}/app-signed.bin"
 
 # Bootloader paths (from esp-idf secure_bootloader project)
 BOOTLOADER_DIR="${SCRIPT_DIR}/../esp-idf/secure_bootloader"
@@ -83,7 +84,7 @@ if [ "$1" == "--init" ]; then
 
     # Step 3: Sign the binary
     echo -e "${YELLOW}[3/6] Signing binary with secure boot key...${NC}"
-    espsecure.py sign_data --version 2 --keyfile "$SIGNING_KEY" "$APP_BIN"
+    espsecure.py sign_data --version 2 --keyfile "$SIGNING_KEY" --output "$APP_SIGNED" "$APP_BIN"
 
     # Step 4: Flash bootloader
     echo -e "${YELLOW}[4/6] Flashing secure bootloader...${NC}"
@@ -95,7 +96,7 @@ if [ "$1" == "--init" ]; then
 
     # Step 6: Flash app
     echo -e "${YELLOW}[6/6] Flashing signed application...${NC}"
-    esptool.py --chip esp32c3 write_flash 0x10000 "$APP_BIN"
+    esptool.py --chip esp32c3 write_flash 0x10000 "$APP_SIGNED"
 
     echo -e "${GREEN}=== Initial setup complete! ===${NC}"
     echo -e "${YELLOW}On first boot, the device will:${NC}"
@@ -117,11 +118,11 @@ else
 
     # Step 3: Sign the binary
     echo -e "${YELLOW}[3/4] Signing binary with secure boot key...${NC}"
-    espsecure.py sign_data --version 2 --keyfile "$SIGNING_KEY" "$APP_BIN"
+    espsecure.py sign_data --version 2 --keyfile "$SIGNING_KEY" --output "$APP_SIGNED" "$APP_BIN"
 
     # Step 4: Flash
     echo -e "${YELLOW}[4/4] Flashing signed binary...${NC}"
-    esptool.py --chip esp32c3 write_flash 0x10000 "$APP_BIN"
+    esptool.py --chip esp32c3 write_flash 0x10000 "$APP_SIGNED"
 
     echo -e "${GREEN}=== Flash complete! ===${NC}"
 fi
