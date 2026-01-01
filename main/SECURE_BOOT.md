@@ -39,9 +39,15 @@ espsecure.py generate_signing_key --version 2 secure_boot_signing_key.pem
 You need a bootloader with Secure Boot enabled. This requires using esp-idf's build system for the bootloader:
 
 ```bash
+# ESP-IDF requires Python 3.10+. Install if needed (macOS):
+brew install python@3.12
+
 # Clone esp-idf
 git clone --recursive https://github.com/espressif/esp-idf.git
 cd esp-idf
+
+# Run install with Python 3.12
+export IDF_PYTHON=python3.12
 ./install.sh esp32c3
 source export.sh
 
@@ -79,12 +85,28 @@ espsecure.py sign_data --version 2 --keyfile secure_boot_signing_key.pem app.bin
 
 ## Step 4: Flash Everything (First Time - Enables Secure Boot)
 
+Use the provided script for first-time setup:
+
+```bash
+# First time setup - flashes bootloader, partition table, and signed app
+./secure-flash.sh --init
+```
+
+This will:
+1. Activate the virtual environment automatically
+2. Build your Rust application
+3. Sign it with your secure boot key
+4. Flash the bootloader, partition table, and signed app
+5. Prompt for confirmation (this is IRREVERSIBLE!)
+
+Or manually:
+
 ```bash
 # Flash bootloader (from esp-idf build)
-esptool.py --chip esp32c3 write_flash 0x0 build/bootloader/bootloader.bin
+esptool.py --chip esp32c3 write_flash 0x0 ../esp-idf/secure_bootloader/build/bootloader/bootloader.bin
 
 # Flash partition table
-esptool.py --chip esp32c3 write_flash 0x8000 build/partition_table/partition-table.bin
+esptool.py --chip esp32c3 write_flash 0x8000 ../esp-idf/secure_bootloader/build/partition_table/partition-table.bin
 
 # Flash your signed Rust app
 esptool.py --chip esp32c3 write_flash 0x10000 app.bin
@@ -100,7 +122,14 @@ On first boot, the bootloader will:
 
 ## Future Updates
 
-Every time you update your firmware:
+Use the provided script for one-command updates:
+
+```bash
+# Build, sign, and flash in one command (activates venv automatically)
+./secure-flash.sh
+```
+
+Or manually:
 
 ```bash
 # Build

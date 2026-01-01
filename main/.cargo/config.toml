@@ -24,5 +24,8 @@ bf = "bloat --release -n 10" # Get the top 10 largest functions (by binary size)
 bc = "bloat --release --crates -n 10" # Get the top 10 largest crates (by binary size)
 f = "fmt"
 
+# Secure boot: build release binary and save as app.bin (run sign-and-flash.sh after)
+b = "build --release"
+
 [net]
 git-fetch-with-cli = true
