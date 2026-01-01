@@ -13,9 +13,17 @@ This guide covers enabling Secure Boot V2 to ensure only your signed firmware ca
 ## Prerequisites
 
 ```bash
+# Create a virtual environment for ESP tools (in project directory)
+python3 -m venv .venv
+
+# Activate the virtual environment
+source .venv/bin/activate
+
 # Install esptool/espsecure
 pip install esptool
 ```
+
+**Note**: Remember to activate the virtual environment (`source .venv/bin/activate`) before running any `espsecure.py` or `esptool.py` commands.
 
 ## Step 1: Generate Your Signing Key
 

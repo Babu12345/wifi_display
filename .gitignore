@@ -2,8 +2,12 @@
 /.embuild
 /target
 /Cargo.lock
+/.venv
 
 # Certificates
 main/src/certificates/*.pem
 main/src/certificates/*.crt
 main/src/certificates/*.key
+
+# Secure boot certificates
+/*.pem
