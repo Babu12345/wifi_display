@@ -141,10 +141,12 @@ if [ "$1" == "--init" ]; then
         exit 1
     fi
 
-    # Step 1: Burn encryption key to eFuse
-    echo -e "${YELLOW}[1/8] Burning encryption key to eFuse...${NC}"
-    echo -e "${RED}This step is IRREVERSIBLE!${NC}"
-    espefuse.py --chip esp32c3 --port "$PORT" burn_key BLOCK_KEY0 "$ENCRYPTION_KEY" XTS_AES_128_KEY
+    # Step 1: Burn encryption key to eFuse (skip if already burned)
+    echo -e "${YELLOW}[1/8] Checking/burning encryption key to eFuse...${NC}"
+    # Try to burn the key, but ignore the error if it's already burned (read-protected)
+    if espefuse.py --chip esp32c3 --port "$PORT" burn_key BLOCK_KEY0 "$ENCRYPTION_KEY" XTS_AES_128_KEY 2>&1 | grep -q "read-protected"; then
+        echo -e "${GREEN}Encryption key already burned to eFuse (read-protected), skipping...${NC}"
+    fi
 
     # Step 2: Build Rust app
     echo -e "${YELLOW}[2/8] Building release binary...${NC}"
