@@ -194,13 +194,30 @@ Flash Encryption prevents reading firmware from the chip. Combined with Secure B
 | Feature | Development Mode | Release Mode |
 |---------|-----------------|--------------|
 | Re-flash plaintext | Yes (bootloader encrypts) | No |
-| UART download | Allowed | Disabled |
+| UART download | Allowed | **DISABLED (ignores UART ROM setting!)** |
 | Disable encryption | Once (burn eFuse) | Never |
 | Use case | Testing | Production |
 
-**Development Mode**: Allows repeated plaintext flashing - bootloader encrypts on-device. Can disable encryption once by burning `SPI_BOOT_CRYPT_CNT` eFuse.
+**Development Mode**: Allows repeated plaintext flashing - bootloader encrypts on-device. Can disable encryption once by burning `SPI_BOOT_CRYPT_CNT` eFuse. UART flashing remains functional.
 
 **Release Mode**: Permanently disables plaintext UART flashing. Updates only via OTA. This is the secure production setting.
+
+### CRITICAL WARNING: Release Mode Disables UART Flashing
+
+**Release mode AUTOMATICALLY enables Secure Download Mode regardless of the "UART ROM download mode" setting in menuconfig.** This is hardcoded behavior in ESP-IDF's bootloader - it burns the `ENABLE_SECURITY_DOWNLOAD` eFuse on first boot.
+
+This means:
+- Even if you select "UART ROM download mode: Enabled (not recommended)" in menuconfig
+- Release mode will still disable normal UART flashing
+- The device will only accept OTA updates after first boot
+- **This is IRREVERSIBLE** - the eFuse cannot be changed
+
+**If you need UART flashing capability, you MUST use Development mode.**
+
+| Mode | UART Flashing After First Boot |
+|------|-------------------------------|
+| Development | Yes (with pre-encrypted binaries) |
+| Release | **No** (OTA only, regardless of UART ROM setting) |
 
 ## Step 1: Generate Encryption Key (Optional)
 
