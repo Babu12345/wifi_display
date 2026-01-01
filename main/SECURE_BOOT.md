@@ -75,7 +75,25 @@ In menuconfig, configure the following settings:
 - **Security features → Secure boot private signing key** → absolute path to your `secure_boot_signing_key.pem`
 - **Security features → Enable flash encryption on boot** → `Yes` (for flash encryption)
 - **Security features → Enable usage mode** → `Release` (for production) or `Development` (for testing)
-- **Security features → UART ROM download mode** → `Permanently switch to Secure Download mode`
+- **Security features → Check Flash Encryption enabled on app startup** → `Yes` (validates encryption on each boot)
+- **Security features → UART ROM download mode** → Choose based on your needs:
+  - `Enabled (not recommended)` - Allows UART flashing of encrypted binaries
+  - `Enabled with Secure Download mode` - Authenticated uploads only
+  - `Disabled` - No UART flashing at all (OTA only)
+
+#### UART Download Mode Options
+
+| Option | UART Flashing | Security | Use Case |
+|--------|---------------|----------|----------|
+| **Enabled** | Yes (encrypted binaries only) | Lower | Development, easier recovery |
+| **Enabled with Secure Download mode** | Authenticated only | Medium | Production with OTA fallback |
+| **Disabled** | No | Highest | Maximum security, OTA only |
+
+**Note:** Even with "Enabled (not recommended)", the device still requires signed + encrypted binaries to boot. The trade-off is that physical attackers can erase flash or attempt fault injection, but cannot execute unsigned code.
+
+#### Check Flash Encryption on Startup
+
+This option validates flash encryption is properly enabled each time the app boots. When enabled, the bootloader verifies the `SPI_BOOT_CRYPT_CNT` eFuse is set before running the application. This prevents accidentally running unencrypted firmware on a device that should be encrypted.
 
 ```bash
 # Build the bootloader and partition table
