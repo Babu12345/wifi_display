@@ -1,5 +1,5 @@
 # ESP32-C3 Partition Table for Development (espflash default bootloader)
-# For Secure Boot, use esp-idf bootloader with partition table at 0x10000
+# For Secure Boot, use partitions_secure.csv with esp-idf bootloader
 # Name,   Type, SubType, Offset,  Size, Flags
-nvs,      data, nvs,     0x9000,   0x6000,
-factory,  app,  factory, 0x10000,  0x300000,
+nvs,      data, nvs,     0x9000,  0x6000,
+factory,  app,  factory, 0x10000, 0x300000,

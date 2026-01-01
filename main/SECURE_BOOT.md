@@ -58,14 +58,28 @@ idf.py set-target esp32c3
 idf.py menuconfig
 ```
 
-In menuconfig, configure:
-- **Security features → Enable hardware Secure Boot in bootloader → Secure Boot V2**
-- **Security features → Secure boot private signing key** → path to your `secure_boot_signing_key.pem`
-- **Security features → UART ROM download mode** → `Permanently switch to Secure Download mode` or `Permanently disabled` (for production)
+### Menuconfig Settings
+
+In menuconfig, configure the following settings:
+
+#### Serial flasher config
+- **Serial flasher config → Flash size** → `8MB` (must match your actual flash size)
+
+#### Partition Table
+- **Partition Table** → `Custom partition table CSV`
+- **Partition Table → Custom partition CSV file** → path to `partitions_secure.csv`
+- **Partition Table → Offset of partition table** → `0x10000`
+
+#### Security features
+- **Security features → Enable hardware Secure Boot in bootloader** → `Secure Boot V2`
+- **Security features → Secure boot private signing key** → absolute path to your `secure_boot_signing_key.pem`
+- **Security features → Enable flash encryption on boot** → `Yes` (for flash encryption)
+- **Security features → Enable usage mode** → `Release` (for production) or `Development` (for testing)
+- **Security features → UART ROM download mode** → `Permanently switch to Secure Download mode`
 
 ```bash
-# Build the signed bootloader
-idf.py bootloader
+# Build the bootloader and partition table
+idf.py bootloader partition-table
 ```
 
 ## Step 3: Sign Your Rust Application
@@ -282,6 +296,71 @@ espsecure.py sign_data --version 2 --keyfile secure_boot_signing_key.pem app.bin
 # In dev mode, just flash - bootloader encrypts
 esptool.py --chip esp32c3 write_flash 0x10000 app.bin
 ```
+
+---
+
+# Partition Table Layout
+
+Development mode and Secure Boot mode use **different partition table layouts** because they use different bootloaders.
+
+## Why Two Partition Tables?
+
+| Tool | Bootloader | Partition Table Location | App Location |
+|------|------------|-------------------------|--------------|
+| espflash (dev) | Built-in | **0x8000** (hardcoded) | 0x10000 |
+| esp-idf (secure) | Custom | **0x10000** (configurable) | 0x20000 |
+
+espflash's bootloader is smaller (~32KB) and always reads the partition table from 0x8000. The secure boot bootloader is larger (~48KB) and needs the partition table at 0x10000 to fit.
+
+## Development Mode: `partitions.csv`
+
+Used by `cargo r` / espflash:
+
+```csv
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x6000,
+factory,  app,  factory, 0x10000, 0x300000,
+```
+
+## Secure Boot Mode: `partitions_secure.csv`
+
+Used by esp-idf bootloader:
+
+```csv
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x11000,  0x6000,
+phy_init, data, phy,     0x17000,  0x1000,
+factory,  app,  factory, 0x20000,  0x2F0000,
+```
+
+## Flash Layout Diagram
+
+```
+Development Mode (espflash):        Secure Boot Mode (esp-idf):
+┌─────────────────┐ 0x000000       ┌─────────────────┐ 0x000000
+│   Bootloader    │                │   Bootloader    │
+│    (~32KB)      │                │    (~48KB)      │
+├─────────────────┤ 0x008000       │                 │
+│ Partition Table │                ├─────────────────┤ 0x010000
+├─────────────────┤ 0x009000       │ Partition Table │
+│      NVS        │                ├─────────────────┤ 0x011000
+│    (24KB)       │                │      NVS        │
+├─────────────────┤ 0x010000       ├─────────────────┤ 0x017000
+│                 │                │    PHY Init     │
+│   Application   │                ├─────────────────┤ 0x020000
+│     (3MB)       │                │                 │
+│                 │                │   Application   │
+│                 │                │     (~3MB)      │
+│                 │                │                 │
+├─────────────────┤ 0x310000       ├─────────────────┤ 0x310000
+│   User Data     │                │   User Data     │
+│  (starts here)  │                │  (starts here)  │
+└─────────────────┘                └─────────────────┘
+```
+
+User data storage starts at 0x310000 in both modes, ensuring compatibility.
+
+---
 
 ## References
 
