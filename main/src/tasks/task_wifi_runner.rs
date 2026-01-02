@@ -286,6 +286,11 @@ async fn task_wifi_runner_inner(
         {
             match load_wifi_credentials(&mut storage) {
                 Ok((new_ssid, new_password)) => {
+                    log::info!(
+                        "Loaded WiFi credentials from storage: SSID='{}', password_len={}",
+                        new_ssid.as_str(),
+                        new_password.len()
+                    );
                     ssid = Some(new_ssid);
                     password = Some(new_password);
                     log::info!("WiFi credentials updated successfully");
@@ -299,12 +304,17 @@ async fn task_wifi_runner_inner(
                 Err(e) => {
                     ssid = Some(DEFAULT_SSID.try_into().unwrap());
                     password = Some(DEFAULT_PASSWORD.try_into().unwrap());
-                    log::info!("No stored credentials found ({}), will use defaults", e);
+                    log::info!(
+                        "No stored credentials found ({}), using defaults: SSID='{}', password_len={}",
+                        e,
+                        DEFAULT_SSID,
+                        DEFAULT_PASSWORD.len()
+                    );
                 }
             }
         }
 
-        // Start WiFi if not already started
+        // Configure and start WiFi
         log::info!("Starting WiFi...");
         if !matches!(controller.is_started(), Ok(true)) {
             let client_config = Configuration::Client(ClientConfiguration {
@@ -338,9 +348,16 @@ async fn task_wifi_runner_inner(
             }
             Err(e) => {
                 log::error!("Failed to connect to WiFi with error: {e:?}");
-                // Stop WiFi before displaying error to avoid SPI contention
-                controller.disconnect_async().await.ok();
-                controller.stop_async().await.ok();
+
+                // Stop WiFi BEFORE displaying to avoid SPI/state conflicts
+                log::info!("Stopping WiFi before error display...");
+                controller.disconnect().ok();
+                Timer::after(Duration::from_millis(200)).await;
+                controller.stop().ok();
+                Timer::after(Duration::from_millis(200)).await;
+                log::info!("WiFi stopped");
+
+                // Now safe to display error message
                 if let Ok(text) = String::<512>::from_str(
                     "WiFi Connection\nFailed\n-------------------\nPlease tap with\nNFC to update",
                 ) && previously_connected
