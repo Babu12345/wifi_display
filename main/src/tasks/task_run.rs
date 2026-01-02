@@ -12,9 +12,10 @@ use crate::tasks::task_display_handler::{
 };
 use crate::{AsyncStack, NotificationType};
 use embassy_futures::select::{Either3, select3};
-use embassy_net::Stack;
+use embassy_net::{Runner, Stack};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, watch::Receiver};
 use embassy_time::{Duration, Timer};
+use esp_wifi::wifi::{WifiDevice, WifiStaDevice};
 use rand_core::CryptoRngCore;
 
 use core::cell::RefCell;
@@ -38,7 +39,7 @@ const MQTT_PORT: u16 = 8883; // TLS port
 const MQTT_CLIENT_ID: &str = "000000";
 const MQTT_TIMEOUT_SECS: u16 = 120;
 /// Max size in bytes of the data being sent via AWS
-pub const MQTT_BUFFER_SIZE: usize = 7_500;
+pub const MQTT_BUFFER_SIZE: usize = 7_000;
 /// Maximum number of dynamic topic subscriptions
 const MAX_DYNAMIC_TOPICS: usize = 4;
 
@@ -49,7 +50,6 @@ const MQTT_TOPICS_STORAGE_SIZE: usize = 512;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 
 // Static buffers for MQTT protected by mutexes to prevent concurrent access
-// OPTIMIZATION: Only need TCP buffers - MQTT client will reuse these for send/receive
 static MQTT_TCP_RX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
     Mutex::new([0u8; MQTT_BUFFER_SIZE]);
 static MQTT_TCP_TX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
@@ -153,6 +153,32 @@ impl MqttTopicsData {
 /// - QRCode: Displays QR codes from URLs stored via NFC (offline mode)
 #[embassy_executor::task]
 pub async fn task_run(
+    stack: Stack<'static>,
+    mut runner: Runner<'static, WifiDevice<'static, WifiStaDevice>>,
+    rng_ref: &'static RefCell<Trng<'static>>,
+    controller: WifiController<'static>,
+    notification: Receiver<'static, NoopRawMutex, NotificationType, NUM_NOTIFICATION_RECEIVERS>,
+    display_channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
+    sha: peripherals::SHA,
+    rsa: peripherals::RSA,
+) {
+    // Spawn the network runner as a background future using join
+    embassy_futures::join::join(runner.run(), async {
+        task_run_inner(
+            stack,
+            rng_ref,
+            controller,
+            notification,
+            display_channel,
+            sha,
+            rsa,
+        )
+        .await
+    })
+    .await;
+}
+
+async fn task_run_inner(
     stack: Stack<'static>,
     rng_ref: &'static RefCell<Trng<'static>>,
     mut controller: WifiController<'static>,
@@ -304,6 +330,9 @@ pub async fn task_run(
             }
             Err(e) => {
                 log::error!("Failed to connect to WiFi with error: {e:?}");
+                // Stop WiFi before displaying error to avoid SPI contention
+                controller.disconnect_async().await.ok();
+                controller.stop_async().await.ok();
                 if let Ok(text) = String::<512>::from_str(
                     "WiFi Connection\nFailed\n-------------------\nPlease tap with\nNFC to update",
                 ) && previously_connected
@@ -475,8 +504,7 @@ async fn handle_live_mqtt_updates<'a>(
     config.max_packet_size = MQTT_BUFFER_SIZE as u32;
     config.keep_alive = MQTT_TIMEOUT_SECS;
 
-    // OPTIMIZATION: Allocate MQTT buffers on the stack (task stack has space for this)
-    // These replace the previously static MQTT_RECV_BUFFER and MQTT_WRITE_BUFFER
+    // Allocate MQTT buffers on the stack - task arena size must be large enough
     let mut recv_buffer = [0u8; MQTT_BUFFER_SIZE];
     let mut write_buffer = [0u8; MQTT_BUFFER_SIZE];
 
@@ -850,7 +878,10 @@ async fn handle_live_mqtt_updates<'a>(
                                 }
                             }
                             Err(e) => {
-                                log::error!("Failed to parse chunk metadata for rate limiting: {}", e);
+                                log::error!(
+                                    "Failed to parse chunk metadata for rate limiting: {}",
+                                    e
+                                );
                                 true // Allow processing on parse error
                             }
                         };

@@ -10,19 +10,19 @@ use core::panic::PanicInfo;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct EspAppDesc {
-    magic_word: u32,         // 0xABCD5432
-    secure_version: u32,     // 0
-    reserv1: [u32; 2],       // reserved
-    version: [u8; 32],       // app version string
-    project_name: [u8; 32],  // project name
-    time: [u8; 16],          // build time
-    date: [u8; 16],          // build date
-    idf_ver: [u8; 32],       // IDF version
-    app_elf_sha256: [u8; 32], // SHA256 of ELF
-    reserv2: [u32; 18],      // reserved
+    magic_word: u32,             // 0xABCD5432
+    secure_version: u32,         // 0
+    reserv1: [u32; 2],           // reserved
+    version: [u8; 32],           // app version string
+    project_name: [u8; 32],      // project name
+    time: [u8; 16],              // build time
+    date: [u8; 16],              // build date
+    idf_ver: [u8; 32],           // IDF version
+    app_elf_sha256: [u8; 32],    // SHA256 of ELF
+    reserv2: [u32; 18],          // reserved
     min_efuse_blk_rev_full: u16, // minimum efuse block revision
     max_efuse_blk_rev_full: u16, // maximum efuse block revision
-    reserv3: u32,            // reserved
+    reserv3: u32,                // reserved
 }
 
 #[used]
@@ -73,7 +73,6 @@ use main::tasks::task_display_handler::{
 };
 use main::tasks::task_nfc::task_nfc;
 use main::tasks::task_run::task_run;
-use main::tasks::task_wifi_runner::task_wifi_runner;
 use main::{NotificationType, initalize_logger, initialize_peripherals, mk_static};
 use nfc::{Nfc, STM25DV64KC};
 #[panic_handler]
@@ -107,7 +106,7 @@ async fn main(spawner: Spawner) {
     initalize_logger();
     let peripherals = initialize_peripherals();
 
-    esp_alloc::heap_allocator!(130 * 1024);
+    esp_alloc::heap_allocator!(120 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sys_timer = SystemTimer::new(peripherals.SYSTIMER);
@@ -185,10 +184,10 @@ async fn main(spawner: Spawner) {
     let receiver = notif.receiver().unwrap();
 
     spawner.must_spawn(task_nfc(nfc, sender));
-    spawner.must_spawn(task_wifi_runner(runner));
     spawner.must_spawn(task_display_handler(display, display_channel, indicator));
     spawner.must_spawn(task_run(
         stack,
+        runner,
         rng_ref,
         wifi_controller,
         receiver,
