@@ -526,7 +526,20 @@ async fn handle_live_mqtt_updates<'a>(
 
     // Rate limiting for live updates - load saved value or default to 0
     let mut min_update_interval_secs: u16 = load_min_update_interval().unwrap_or(0);
-    let mut last_update_instant: Option<embassy_time::Instant> = None;
+    // Track last update time in seconds (persisted to flash for reconnects within same boot)
+    // Load from storage, but only use if it's less than current uptime (same boot session)
+    let now_boot_secs = embassy_time::Instant::now().as_secs();
+    let mut last_update_secs: Option<u64> = load_last_update_timestamp().filter(|&stored| {
+        // Only use stored timestamp if it's from this boot session (stored < current uptime)
+        // If stored > current, we rebooted and should allow first update
+        if stored <= now_boot_secs {
+            log::info!("Using stored timestamp {} (current uptime {})", stored, now_boot_secs);
+            true
+        } else {
+            log::info!("Ignoring stale timestamp {} (current uptime {}), allowing first update", stored, now_boot_secs);
+            false
+        }
+    });
 
     // Load and apply saved max_cycles setting
     if let Some(cycles) = load_max_cycles() {
@@ -811,11 +824,12 @@ async fn handle_live_mqtt_updates<'a>(
 
                         // Check rate limiting (with 4 second buffer for drift/accuracy)
                         const RATE_LIMIT_BUFFER_SECS: u64 = 4;
-                        let now = embassy_time::Instant::now();
+                        let now_secs = embassy_time::Instant::now().as_secs();
                         let should_process = if min_update_interval_secs == 0 {
                             true // No rate limiting
-                        } else if let Some(last) = last_update_instant {
-                            let elapsed_secs = now.duration_since(last).as_secs();
+                        } else if let Some(last_secs) = last_update_secs {
+                            // last_secs is guaranteed to be from this boot session (filtered at load time)
+                            let elapsed_secs = now_secs.saturating_sub(last_secs);
                             let required_secs = (min_update_interval_secs as u64)
                                 .saturating_sub(RATE_LIMIT_BUFFER_SECS);
                             if elapsed_secs >= required_secs {
@@ -836,9 +850,11 @@ async fn handle_live_mqtt_updates<'a>(
                             match process_chunk(payload, display_channel).await {
                                 Ok(result) => {
                                     if result.send_response {
-                                        // Only update last_update_instant on success
+                                        // Only update last_update_secs on success
                                         if result.success {
-                                            last_update_instant = Some(now);
+                                            last_update_secs = Some(now_secs);
+                                            // Persist the timestamp so rate limiting survives reconnects
+                                            save_last_update_timestamp(now_secs);
                                         }
                                         let response = MqttResponse {
                                             response: if result.success {
@@ -880,6 +896,10 @@ async fn handle_live_mqtt_updates<'a>(
                 // ImplementationSpecificError typically means no message available, ignore it
                 log::error!("MQTT receive error: {:?}", e);
                 if e != ReasonCode::ImplementationSpecificError {
+                    // Save timestamp before disconnecting so rate limiting persists across reconnects
+                    if let Some(last_secs) = last_update_secs {
+                        save_last_update_timestamp(last_secs);
+                    }
                     client.disconnect().await.ok();
                     return Err("MQTT receive error");
                 }
@@ -1087,6 +1107,62 @@ fn save_min_update_interval(interval: u16) {
     ) {
         Ok(_) => log::info!("Saved min_update_interval to storage: {} seconds", interval),
         Err(e) => log::error!("Failed to write min_update_interval: {:?}", e),
+    }
+}
+
+/// Load last update timestamp from flash storage (stored as u64, 8 bytes)
+/// Returns seconds since boot when last successful update occurred
+fn load_last_update_timestamp() -> Option<u64> {
+    let mut storage_buf = [0u8; 16];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    match storage.read(storage::storage::StorageContents::LastUpdateTimestamp) {
+        Ok(data) => {
+            // Check if storage is empty (0xFF means uninitialized)
+            if data[0] == 0xFF
+                && data[1] == 0xFF
+                && data[2] == 0xFF
+                && data[3] == 0xFF
+                && data[4] == 0xFF
+                && data[5] == 0xFF
+                && data[6] == 0xFF
+                && data[7] == 0xFF
+            {
+                log::info!("No saved last_update_timestamp found");
+                return None;
+            }
+            let timestamp = u64::from_le_bytes([
+                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
+            ]);
+            log::info!(
+                "Loaded last_update_timestamp from storage: {} seconds",
+                timestamp
+            );
+            Some(timestamp)
+        }
+        Err(e) => {
+            log::error!("Failed to read last_update_timestamp: {:?}", e);
+            None
+        }
+    }
+}
+
+/// Save last update timestamp to flash storage (stored as u64, 8 bytes)
+fn save_last_update_timestamp(timestamp_secs: u64) {
+    let mut storage_buf = [0u8; 16];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    let bytes = timestamp_secs.to_le_bytes();
+    match storage.write_bytes(
+        storage::storage::StorageContents::LastUpdateTimestamp,
+        0,
+        &bytes,
+    ) {
+        Ok(_) => log::info!(
+            "Saved last_update_timestamp to storage: {} seconds",
+            timestamp_secs
+        ),
+        Err(e) => log::error!("Failed to write last_update_timestamp: {:?}", e),
     }
 }
 
