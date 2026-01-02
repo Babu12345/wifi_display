@@ -7,7 +7,7 @@ use base64ct::{Base64, Encoding};
 use serde::Deserialize;
 
 /// JSON payload structure for raw binary display data
-/// Expected format: {"frame": "base64_encoded_string", "requires_response": true/false, "chunk_index": 0, "total_chunks": 1, "unsubscribe_all": false}
+/// Expected format: {"frame": "base64_encoded_string", "requires_response": true/false, "chunk_index": 0, "total_chunks": 1, "unsubscribe_all": false, "timestamp": 1234567890}
 /// The frame data is base64-encoded raw frame data chunk
 #[derive(Deserialize, Debug, Clone, Copy)]
 pub struct BinaryPayload<'a> {
@@ -23,6 +23,9 @@ pub struct BinaryPayload<'a> {
     /// Unsubscribe from all dynamic topics after displaying this frame
     #[serde(default)]
     pub unsubscribe_all: bool,
+    /// Unix timestamp (seconds since epoch) when this frame was generated
+    #[serde(default)]
+    pub timestamp: Option<u64>,
 }
 
 /// Metadata about a chunk extracted from JSON payload
@@ -36,6 +39,8 @@ pub struct ChunkMetadata {
     pub total_chunks: usize,
     /// Unsubscribe from all dynamic topics after displaying this frame
     pub unsubscribe_all: bool,
+    /// Unix timestamp (seconds since epoch) when this frame was generated
+    pub timestamp: Option<u64>,
 }
 
 /// Config payload for subscribing to additional topics
@@ -98,9 +103,25 @@ fn parse_binary_payload(json_data: &[u8]) -> Result<(BinaryPayload<'_>, ChunkMet
         chunk_index: parsed.chunk_index,
         total_chunks: parsed.total_chunks,
         unsubscribe_all: parsed.unsubscribe_all,
+        timestamp: parsed.timestamp,
     };
 
     Ok((parsed, metadata))
+}
+
+/// Parse chunk metadata without decoding the frame data
+///
+/// This is useful for rate limiting checks where you need the timestamp
+/// but don't want to process the entire chunk yet.
+///
+/// # Arguments
+/// * `json_data` - JSON payload bytes
+///
+/// # Returns
+/// ChunkMetadata or error
+pub fn parse_chunk_metadata(json_data: &[u8]) -> Result<ChunkMetadata, &'static str> {
+    let (_, metadata) = parse_binary_payload(json_data)?;
+    Ok(metadata)
 }
 
 /// Parse a config payload from JSON data

@@ -96,6 +96,8 @@ struct ProcessChunkResult {
     success: bool,
     /// Whether to unsubscribe from all dynamic topics
     unsubscribe_all: bool,
+    /// Unix timestamp from the chunk (if provided)
+    timestamp: Option<u64>,
 }
 
 /// Display mode for the main task
@@ -526,20 +528,11 @@ async fn handle_live_mqtt_updates<'a>(
 
     // Rate limiting for live updates - load saved value or default to 0
     let mut min_update_interval_secs: u16 = load_min_update_interval().unwrap_or(0);
-    // Track last update time in seconds (persisted to flash for reconnects within same boot)
-    // Load from storage, but only use if it's less than current uptime (same boot session)
-    let now_boot_secs = embassy_time::Instant::now().as_secs();
-    let mut last_update_secs: Option<u64> = load_last_update_timestamp().filter(|&stored| {
-        // Only use stored timestamp if it's from this boot session (stored < current uptime)
-        // If stored > current, we rebooted and should allow first update
-        if stored <= now_boot_secs {
-            log::info!("Using stored timestamp {} (current uptime {})", stored, now_boot_secs);
-            true
-        } else {
-            log::info!("Ignoring stale timestamp {} (current uptime {}), allowing first update", stored, now_boot_secs);
-            false
-        }
-    });
+    // Track last update Unix timestamp (persisted to flash, survives reboots)
+    let mut last_update_unix_ts: Option<u64> = load_last_update_timestamp();
+    if let Some(ts) = last_update_unix_ts {
+        log::info!("Loaded last update Unix timestamp: {}", ts);
+    }
 
     // Load and apply saved max_cycles setting
     if let Some(cycles) = load_max_cycles() {
@@ -822,70 +815,84 @@ async fn handle_live_mqtt_updates<'a>(
                         // Handle messages from dynamically subscribed topics (live updates)
                         log::info!("Received live update from: {}", t);
 
-                        // Check rate limiting (with 4 second buffer for drift/accuracy)
+                        // Check rate limiting BEFORE processing the chunk
                         const RATE_LIMIT_BUFFER_SECS: u64 = 4;
-                        let now_secs = embassy_time::Instant::now().as_secs();
-                        let should_process = if min_update_interval_secs == 0 {
-                            true // No rate limiting
-                        } else if let Some(last_secs) = last_update_secs {
-                            // last_secs is guaranteed to be from this boot session (filtered at load time)
-                            let elapsed_secs = now_secs.saturating_sub(last_secs);
-                            let required_secs = (min_update_interval_secs as u64)
-                                .saturating_sub(RATE_LIMIT_BUFFER_SECS);
-                            if elapsed_secs >= required_secs {
-                                true
-                            } else {
-                                log::info!(
-                                    "Rate limited: {} secs since last update, need {} secs",
-                                    elapsed_secs,
-                                    required_secs
-                                );
-                                false
+                        let should_process = match decoding::parse_chunk_metadata(payload) {
+                            Ok(metadata) => {
+                                let incoming_ts = metadata.timestamp;
+                                if min_update_interval_secs == 0 {
+                                    true // No rate limiting
+                                } else if let (Some(last_ts), Some(current_ts)) =
+                                    (last_update_unix_ts, incoming_ts)
+                                {
+                                    let elapsed_secs = current_ts.saturating_sub(last_ts);
+                                    let required_secs = (min_update_interval_secs as u64)
+                                        .saturating_sub(RATE_LIMIT_BUFFER_SECS);
+                                    if elapsed_secs >= required_secs {
+                                        true
+                                    } else {
+                                        log::info!(
+                                            "Rate limited: {} secs since last update, need {} secs",
+                                            elapsed_secs,
+                                            required_secs
+                                        );
+                                        false
+                                    }
+                                } else {
+                                    true // First update or no timestamp in chunk
+                                }
                             }
-                        } else {
-                            true // First update
+                            Err(e) => {
+                                log::error!("Failed to parse chunk metadata for rate limiting: {}", e);
+                                true // Allow processing on parse error
+                            }
                         };
 
-                        if should_process {
-                            match process_chunk(payload, display_channel).await {
-                                Ok(result) => {
-                                    if result.send_response {
-                                        // Only update last_update_secs on success
-                                        if result.success {
-                                            last_update_secs = Some(now_secs);
-                                            // Persist the timestamp so rate limiting survives reconnects
-                                            save_last_update_timestamp(now_secs);
+                        if !should_process {
+                            continue; // Skip processing this chunk entirely
+                        }
+
+                        // Process chunk only if not rate limited
+                        match process_chunk(payload, display_channel).await {
+                            Ok(result) => {
+                                if result.send_response {
+                                    // Update last_update_unix_ts on success
+                                    if result.success {
+                                        if let Some(ts) = result.timestamp {
+                                            last_update_unix_ts = Some(ts);
+                                            // Persist the timestamp so rate limiting survives reboots
+                                            save_last_update_timestamp(ts);
                                         }
-                                        let response = MqttResponse {
-                                            response: if result.success {
-                                                MqttResponseStatus::Success
-                                            } else {
-                                                MqttResponseStatus::Error
-                                            },
-                                        };
-                                        let mut response_buf = [0u8; 32];
-                                        let len =
-                                            serde_json_core::to_slice(&response, &mut response_buf)
-                                                .expect("Failed to serialize response");
-                                        client
-                                            .send_message(
-                                                response_topic.as_str(),
-                                                &response_buf[..len],
-                                                rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
-                                                true,
-                                            )
-                                            .await
-                                            .ok();
                                     }
-                                    if result.unsubscribe_all {
-                                        log::info!(
-                                            "Queuing unsubscribe from all dynamic topics (from live update)"
-                                        );
-                                        pending_unsubscribe_all = true;
-                                    }
+                                    let response = MqttResponse {
+                                        response: if result.success {
+                                            MqttResponseStatus::Success
+                                        } else {
+                                            MqttResponseStatus::Error
+                                        },
+                                    };
+                                    let mut response_buf = [0u8; 32];
+                                    let len =
+                                        serde_json_core::to_slice(&response, &mut response_buf)
+                                            .expect("Failed to serialize response");
+                                    client
+                                        .send_message(
+                                            response_topic.as_str(),
+                                            &response_buf[..len],
+                                            rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
+                                            true,
+                                        )
+                                        .await
+                                        .ok();
                                 }
-                                Err(e) => log::error!("Failed to process live update: {}", e),
+                                if result.unsubscribe_all {
+                                    log::info!(
+                                        "Queuing unsubscribe from all dynamic topics (from live update)"
+                                    );
+                                    pending_unsubscribe_all = true;
+                                }
                             }
+                            Err(e) => log::error!("Failed to process live update: {}", e),
                         }
                     }
                     _ => log::warn!("Received message on unexpected topic: {}", topic),
@@ -897,8 +904,8 @@ async fn handle_live_mqtt_updates<'a>(
                 log::error!("MQTT receive error: {:?}", e);
                 if e != ReasonCode::ImplementationSpecificError {
                     // Save timestamp before disconnecting so rate limiting persists across reconnects
-                    if let Some(last_secs) = last_update_secs {
-                        save_last_update_timestamp(last_secs);
+                    if let Some(ts) = last_update_unix_ts {
+                        save_last_update_timestamp(ts);
                     }
                     client.disconnect().await.ok();
                     return Err("MQTT receive error");
@@ -1196,6 +1203,7 @@ async fn process_chunk(
             send_response: metadata.requires_response,
             success: false,
             unsubscribe_all: false,
+            timestamp: metadata.timestamp,
         });
     }
 
@@ -1212,6 +1220,7 @@ async fn process_chunk(
             send_response: true,
             success: queued,
             unsubscribe_all: metadata.unsubscribe_all,
+            timestamp: metadata.timestamp,
         });
     }
 
@@ -1219,5 +1228,6 @@ async fn process_chunk(
         send_response: metadata.requires_response,
         success: true,
         unsubscribe_all: false, // Only unsubscribe after all chunks received
+        timestamp: metadata.timestamp,
     })
 }
