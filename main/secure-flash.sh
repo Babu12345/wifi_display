@@ -224,8 +224,6 @@ else
 
     # Step 5: Flash encrypted binary
     echo -e "${YELLOW}[5/5] Flashing encrypted binary...${NC}"
-    echo -e "${CYAN}Enter download mode: Hold BOOT, press RESET, release both${NC}"
-    read -p "Press Enter when device is in download mode..."
     esptool.py --chip esp32c3 --port "$PORT" write_flash "$APP_OFFSET" "$APP_ENCRYPTED"
 
     echo -e "${GREEN}=== Flash complete! ===${NC}"
