@@ -3,7 +3,11 @@
 /target
 /Cargo.lock
 /.venv
-/esp-idf
+# ESP-IDF - only track secure_bootloader config
+/esp-idf/*
+!/esp-idf/secure_bootloader
+/esp-idf/secure_bootloader/build
+/esp-idf/secure_bootloader/sdkconfig.old
 *.bin
 
 # Certificates
