@@ -219,6 +219,58 @@ This means:
 | Development | Yes (with pre-encrypted binaries) |
 | Release | **No** (OTA only, regardless of UART ROM setting) |
 
+## Switching Between Development and Release Mode
+
+**IMPORTANT:** You must rebuild the bootloader after changing modes. The mode is baked into the bootloader binary.
+
+### To Switch Modes
+
+1. **Navigate to the bootloader project:**
+   ```bash
+   cd ../esp-idf/secure_bootloader
+   ```
+
+2. **Source ESP-IDF** (use your installed version path):
+   ```bash
+   source $IDF_PATH/export.sh
+   # Or for example: source ~/esp/v5.3.3/esp-idf/export.sh
+   ```
+
+3. **Open menuconfig:**
+   ```bash
+   idf.py menuconfig
+   ```
+
+4. **Navigate to:** `Security features → Enable usage mode`
+
+5. **Select your mode:**
+   - `Development (NOT SECURE)` - Allows UART flashing of pre-encrypted binaries
+   - `Release` - Disables UART flashing permanently (OTA only)
+
+6. **Save and exit** (Press `S` then `Q`)
+
+7. **Clean and rebuild** (required after mode change):
+   ```bash
+   idf.py fullclean
+   idf.py bootloader partition-table
+   ```
+
+### Verify Current Mode
+
+Check the sdkconfig file:
+```bash
+grep "FLASH_ENCRYPTION_MODE" sdkconfig
+```
+
+- `CONFIG_SECURE_FLASH_ENCRYPTION_MODE_DEVELOPMENT=y` → Development mode
+- `CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE=y` → Release mode
+
+### Why Clean Build is Required
+
+The bootloader binary embeds the security configuration at compile time. If you change from Release to Development mode in menuconfig but don't rebuild, the old Release mode bootloader will still be used and will burn the wrong eFuses on your device.
+
+**Always run `idf.py fullclean` before `idf.py bootloader partition-table` after changing security settings.**
+
 ## Step 1: Generate Encryption Key (Optional)
 
 You can let the device generate its own key (recommended for production), or generate one yourself:
