@@ -29,7 +29,7 @@ use storage::storage::PersistentStorage;
 /// WIFI SSID
 pub const DEFAULT_SSID: &str = "HONESTWIFI-2325-2G";
 /// WIFI Password
-pub const DEFAULT_PASSWORD: &str = "9526070855!1";
+pub const DEFAULT_PASSWORD: &str = "9526070850!";
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
 
@@ -316,8 +316,16 @@ async fn task_wifi_runner_inner(
                     .unwrap_or_else(|| DEFAULT_PASSWORD.try_into().unwrap()),
                 ..Default::default()
             });
-            controller.set_configuration(&client_config).unwrap();
-            controller.start_async().await.unwrap();
+            if let Err(e) = controller.set_configuration(&client_config) {
+                log::error!("Failed to set WiFi configuration: {:?}", e);
+                Timer::after(Duration::from_secs(5)).await;
+                continue 'process;
+            }
+            if let Err(e) = controller.start_async().await {
+                log::error!("Failed to start WiFi: {:?}", e);
+                Timer::after(Duration::from_secs(5)).await;
+                continue 'process;
+            }
             log::info!("WiFi started");
         }
 
