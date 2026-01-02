@@ -422,4 +422,57 @@ mod tests {
 
         assert_eq!(config.max_cycles, None);
     }
+
+    #[test]
+    fn test_parse_chunk_metadata_basic() {
+        let json = br#"{"frame":"AQID","requires_response":true,"chunk_index":0,"total_chunks":3}"#;
+
+        let metadata = parse_chunk_metadata(json).unwrap();
+
+        assert_eq!(metadata.requires_response, true);
+        assert_eq!(metadata.chunk_index, 0);
+        assert_eq!(metadata.total_chunks, 3);
+        assert_eq!(metadata.unsubscribe_all, false);
+        assert_eq!(metadata.timestamp, None);
+    }
+
+    #[test]
+    fn test_parse_chunk_metadata_with_timestamp() {
+        let json = br#"{"frame":"AQID","requires_response":false,"chunk_index":1,"total_chunks":2,"timestamp":1735689600}"#;
+
+        let metadata = parse_chunk_metadata(json).unwrap();
+
+        assert_eq!(metadata.requires_response, false);
+        assert_eq!(metadata.chunk_index, 1);
+        assert_eq!(metadata.total_chunks, 2);
+        assert_eq!(metadata.timestamp, Some(1735689600));
+    }
+
+    #[test]
+    fn test_parse_chunk_metadata_with_unsubscribe_all() {
+        let json = br#"{"frame":"AQID","requires_response":true,"chunk_index":2,"total_chunks":3,"unsubscribe_all":true,"timestamp":1735689600}"#;
+
+        let metadata = parse_chunk_metadata(json).unwrap();
+
+        assert_eq!(metadata.requires_response, true);
+        assert_eq!(metadata.chunk_index, 2);
+        assert_eq!(metadata.total_chunks, 3);
+        assert_eq!(metadata.unsubscribe_all, true);
+        assert_eq!(metadata.timestamp, Some(1735689600));
+    }
+
+    #[test]
+    fn test_parse_chunk_metadata_invalid_json() {
+        let json = b"{invalid json}";
+        let result = parse_chunk_metadata(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_chunk_metadata_missing_required_fields() {
+        // Missing chunk_index
+        let json = br#"{"frame":"AQID","requires_response":true,"total_chunks":1}"#;
+        let result = parse_chunk_metadata(json);
+        assert!(result.is_err());
+    }
 }

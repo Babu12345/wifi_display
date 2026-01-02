@@ -667,6 +667,13 @@ async fn handle_live_mqtt_updates<'a>(
                         match process_chunk(payload, display_channel).await {
                             Ok(result) => {
                                 if result.send_response {
+                                    // Update last_update_unix_ts on success
+                                    if result.success {
+                                        if let Some(ts) = result.timestamp {
+                                            last_update_unix_ts = Some(ts);
+                                            save_last_update_timestamp(ts);
+                                        }
+                                    }
                                     let response = MqttResponse {
                                         response: if result.success {
                                             MqttResponseStatus::Success
