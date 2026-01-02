@@ -72,7 +72,7 @@ use main::tasks::task_display_handler::{
     DISPLAY_CHANNEL_SIZE, DisplayMessage, task_display_handler,
 };
 use main::tasks::task_nfc::task_nfc;
-use main::tasks::task_run::task_run;
+use main::tasks::task_wifi_runner::task_wifi_runner;
 use main::{NotificationType, initalize_logger, initialize_peripherals, mk_static};
 use nfc::{Nfc, STM25DV64KC};
 #[panic_handler]
@@ -185,7 +185,7 @@ async fn main(spawner: Spawner) {
 
     spawner.must_spawn(task_nfc(nfc, sender));
     spawner.must_spawn(task_display_handler(display, display_channel, indicator));
-    spawner.must_spawn(task_run(
+    spawner.must_spawn(task_wifi_runner(
         stack,
         runner,
         rng_ref,

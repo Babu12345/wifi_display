@@ -2,7 +2,6 @@
 
 pub mod task_display_handler;
 pub mod task_nfc;
-pub mod task_run;
 pub mod task_wifi_runner;
 
 /// Custom slice trait for trimming or extending slices
