@@ -54,8 +54,11 @@ Features:\n\
 - And more!\n\n\
 Scan QR to start";
 
-/// Support URL displayed as QR code
-const SUPPORT_URL: &str = "https://babu12345.github.io/portrait_v2_ios/";
+/// Get started URL displayed as QR code when WiFi connects
+const GET_STARTED_URL: &str = "https://babu12345.github.io/portrait_v2_ios/get_started";
+
+/// Support URL displayed as QR code when WiFi disconnects
+const SUPPORT_URL: &str = "https://babu12345.github.io/portrait_v2_ios/support";
 
 const MQTT_BROKER_CSTR: &CStr = c"avbh2adibwzla-ats.iot.us-east-2.amazonaws.com";
 const MQTT_PORT: u16 = 8883; // TLS port
@@ -373,7 +376,7 @@ async fn task_wifi_runner_inner(
                     queue_text_with_qr_display(
                         display_channel,
                         WIFI_CONNECTED_MSG,
-                        SUPPORT_URL,
+                        GET_STARTED_URL,
                     );
                     log::info!("Queued WiFi reconnected message for display");
                 }
