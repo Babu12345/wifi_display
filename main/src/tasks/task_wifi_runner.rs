@@ -34,6 +34,17 @@ pub const DEFAULT_PASSWORD: &str = "9526070855!1";
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
 
+/// WiFi disconnection error message displayed with QR code for support
+const WIFI_DISCONNECTED_MSG: &str = "WiFi Disconnected\n\n\
+1. Check router\n   is online\n\
+2. Use 2.4GHz\n   supported network\n\
+3. Check password\n\n\
+Tap NFC to update\n\
+or scan QR for help";
+
+/// Support URL displayed as QR code when WiFi disconnects
+const WIFI_SUPPORT_URL: &str = "https://babu12345.github.io/portrait_v2_ios/";
+
 const MQTT_BROKER_CSTR: &CStr = c"avbh2adibwzla-ats.iot.us-east-2.amazonaws.com";
 const MQTT_PORT: u16 = 8883; // TLS port
 // Client ID: Update this 6-character alphanumeric code for each board
@@ -371,8 +382,8 @@ async fn task_wifi_runner_inner(
                 if previously_connected {
                     queue_text_with_qr_display(
                         display_channel,
-                        "WiFi Disconnected\n\n1. Check router\n   is online\n2. Use 2.4GHz\n   supported network\n3. Check password\n\nTap NFC to update\nor scan QR for help",
-                        "https://babu12345.github.io/portrait_v2_ios/",
+                        WIFI_DISCONNECTED_MSG,
+                        WIFI_SUPPORT_URL,
                     );
                     log::info!("Queued WiFi error message with QR for display");
                 }
