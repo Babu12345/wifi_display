@@ -344,6 +344,15 @@ async fn task_wifi_runner_inner(
         match controller.connect_async().await {
             Ok(_) => {
                 log::info!("WiFi connected");
+                // Show reconnected message if we were previously disconnected
+                if !previously_connected {
+                    if let Ok(text) =
+                        String::<512>::from_str("WiFi Connected!\n\nWaiting for\nan image...")
+                    {
+                        queue_text_display(display_channel, &text);
+                        log::info!("Queued WiFi reconnected message for display");
+                    }
+                }
                 previously_connected = true;
             }
             Err(e) => {
@@ -359,7 +368,7 @@ async fn task_wifi_runner_inner(
 
                 // Now safe to display error message
                 if let Ok(text) = String::<512>::from_str(
-                    "WiFi Connection\nFailed\n-------------------\nPlease tap with\nNFC to update",
+                    "WiFi Disconnected\n\n1. Check router\n   is online\n2. Verify 2.4GHz\n   network\n3. Check password\n\nTap NFC to update",
                 ) && previously_connected
                 {
                     queue_text_display(display_channel, &text);
@@ -367,6 +376,9 @@ async fn task_wifi_runner_inner(
                 }
                 Timer::after(Duration::from_secs(5)).await;
                 previously_connected = false;
+                // Test reconnection with correct password
+                // password = Some(String::<64>::from_str("9526070855!").unwrap());
+                // WiFi is already stopped, so needs_start will be true on next iteration
                 continue 'process;
             }
         }
