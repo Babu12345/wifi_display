@@ -42,8 +42,18 @@ const WIFI_DISCONNECTED_MSG: &str = "WiFi Disconnected\n\n\
 Tap NFC to update\n\
 or scan QR for help";
 
-/// Support URL displayed as QR code when WiFi disconnects
-const WIFI_SUPPORT_URL: &str = "https://babu12345.github.io/portrait_v2_ios/";
+/// WiFi connected message showing available features
+const WIFI_CONNECTED_MSG: &str = "WiFi Connected!\n\n\
+Features:\n\
+- Upload images\n\
+- Display QR codes\n\
+- Bible verses\n\
+- Clock display\n\
+- And more!\n\n\
+Scan QR to start";
+
+/// Support URL displayed as QR code
+const SUPPORT_URL: &str = "https://babu12345.github.io/portrait_v2_ios/";
 
 const MQTT_BROKER_CSTR: &CStr = c"avbh2adibwzla-ats.iot.us-east-2.amazonaws.com";
 const MQTT_PORT: u16 = 8883; // TLS port
@@ -358,12 +368,12 @@ async fn task_wifi_runner_inner(
                 log::info!("WiFi connected");
                 // Show reconnected message if we were previously disconnected
                 if !previously_connected {
-                    if let Ok(text) =
-                        String::<512>::from_str("WiFi Connected!\n\nWaiting for\nan image...")
-                    {
-                        queue_text_display(display_channel, &text);
-                        log::info!("Queued WiFi reconnected message for display");
-                    }
+                    queue_text_with_qr_display(
+                        display_channel,
+                        WIFI_CONNECTED_MSG,
+                        SUPPORT_URL,
+                    );
+                    log::info!("Queued WiFi reconnected message for display");
                 }
                 previously_connected = true;
             }
@@ -383,7 +393,7 @@ async fn task_wifi_runner_inner(
                     queue_text_with_qr_display(
                         display_channel,
                         WIFI_DISCONNECTED_MSG,
-                        WIFI_SUPPORT_URL,
+                        SUPPORT_URL,
                     );
                     log::info!("Queued WiFi error message with QR for display");
                 }
