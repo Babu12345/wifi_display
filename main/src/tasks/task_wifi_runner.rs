@@ -29,7 +29,7 @@ use storage::storage::PersistentStorage;
 /// WIFI SSID
 pub const DEFAULT_SSID: &str = "HONESTWIFI-2325-2G";
 /// WIFI Password
-pub const DEFAULT_PASSWORD: &str = "9526070850!";
+pub const DEFAULT_PASSWORD: &str = "9526070855!";
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
 

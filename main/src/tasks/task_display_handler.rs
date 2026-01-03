@@ -95,7 +95,7 @@ pub async fn task_display_handler(
             }
             DisplayMessage::QRCode => {
                 indicator.toggle();
-                let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
+                let mut buf = UNIFIED_DISPLAY_BUFFER.lock().await;
                 // Only use first DISPLAY_TEXT_BUFFER_LENGTH bytes for URL
                 let url_slice = &buf[..DISPLAY_TEXT_BUFFER_LENGTH];
                 let len = url_slice
@@ -103,10 +103,15 @@ pub async fn task_display_handler(
                     .position(|&b| b == 0)
                     .unwrap_or(url_slice.len());
                 match core::str::from_utf8(&url_slice[..len]) {
-                    Ok(url) if !url.is_empty() => match display_qr_code(&mut display, url).await {
-                        Ok(_) => log::info!("Successfully displayed QR code"),
-                        Err(e) => log::error!("Error displaying QR code: {:?}", e),
-                    },
+                    Ok(url) if !url.is_empty() => {
+                        // Copy URL to stack before reusing buffer for rendering
+                        let mut url_copy = heapless::String::<DISPLAY_TEXT_BUFFER_LENGTH>::new();
+                        let _ = url_copy.push_str(url);
+                        match display_qr_code(&mut display, &url_copy, &mut buf).await {
+                            Ok(_) => log::info!("Successfully displayed QR code"),
+                            Err(e) => log::error!("Error displaying QR code: {:?}", e),
+                        }
+                    }
                     Ok(_) => {} // Empty URL, do nothing
                     Err(_) => {
                         log::error!("Invalid UTF-8 in URL buffer");
@@ -271,8 +276,9 @@ async fn display_text(
 }
 
 /// Update the e-ink display with a QR code from URL
-async fn display_qr_code<'a, 'b>(
-    display: &'a mut Display<
+/// Reuses the provided buffer for rendering to avoid extra static allocation
+async fn display_qr_code(
+    display: &mut Display<
         'static,
         SpiV2<'static, Async>,
         esp_hal::gpio::Input<'static>,
@@ -281,7 +287,8 @@ async fn display_qr_code<'a, 'b>(
         EPD417,
         display::OFF,
     >,
-    url: &'b str,
+    url: &str,
+    frame: &mut [u8; DISPLAY_SIZE_IN_BYTES],
 ) -> Result<(), &'static str> {
     log::info!("Updating display with QR code");
 
@@ -330,10 +337,11 @@ async fn display_qr_code<'a, 'b>(
         .await
         .map_err(|_| "Failed to turn on display")?;
 
-    let mut frame = qr.to_frame::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>();
+    // Render QR code directly into the provided buffer
+    qr.render_to_buffer::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(frame);
 
     display_on
-        .update_and_save_frame::<FlashStorage>(&mut frame, true)
+        .update_and_save_frame::<FlashStorage>(frame, true)
         .await
         .map_err(|_| "Failed to update display")?;
 
