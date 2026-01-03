@@ -190,7 +190,8 @@ pub async fn task_wifi_runner(
     rsa: peripherals::RSA,
 ) {
     // Spawn the network runner as a background future using join
-    embassy_futures::join::join(runner.run(), async {
+    embassy_futures::join::join(
+        runner.run(),
         task_wifi_runner_inner(
             stack,
             rng_ref,
@@ -199,9 +200,8 @@ pub async fn task_wifi_runner(
             display_channel,
             sha,
             rsa,
-        )
-        .await
-    })
+        ),
+    )
     .await;
 }
 
