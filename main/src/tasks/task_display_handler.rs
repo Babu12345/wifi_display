@@ -16,6 +16,9 @@ use text::{Alignment, FontSize, Text};
 pub const DISPLAY_CHANNEL_SIZE: usize = 5;
 const DISPLAY_UPDATE_DELAY_MS: u64 = 20; // Minimum delay between display updates
 const DISPLAY_TEXT_BUFFER_LENGTH: usize = 512;
+const DISPLAY_URL_BUFFER_LENGTH: usize = 256;
+// URL buffer starts after text buffer in the unified buffer
+const DISPLAY_URL_BUFFER_OFFSET: usize = DISPLAY_TEXT_BUFFER_LENGTH;
 
 const DISPLAY_WIDTH: u32 = 400;
 const DISPLAY_HEIGHT: u32 = 300;
@@ -29,6 +32,8 @@ pub enum DisplayMessage {
     Text,
     /// Display a QR code from URL (via NFC)
     QRCode,
+    /// Display text with a QR code (text on left, QR on right)
+    TextWithQR,
     /// Display raw binary data (complete frame from MQTT)
     RawBinary,
     /// Update max cycles before full refresh
@@ -119,6 +124,46 @@ pub async fn task_display_handler(
                 }
                 indicator.toggle();
             }
+            DisplayMessage::TextWithQR => {
+                indicator.toggle();
+                let mut buf = UNIFIED_DISPLAY_BUFFER.lock().await;
+                // Text is in first DISPLAY_TEXT_BUFFER_LENGTH bytes
+                let text_slice = &buf[..DISPLAY_TEXT_BUFFER_LENGTH];
+                let text_len = text_slice
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(text_slice.len());
+                // URL is in next DISPLAY_URL_BUFFER_LENGTH bytes
+                let url_slice =
+                    &buf[DISPLAY_URL_BUFFER_OFFSET..DISPLAY_URL_BUFFER_OFFSET + DISPLAY_URL_BUFFER_LENGTH];
+                let url_len = url_slice
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(url_slice.len());
+
+                match (
+                    core::str::from_utf8(&text_slice[..text_len]),
+                    core::str::from_utf8(&url_slice[..url_len]),
+                ) {
+                    (Ok(text), Ok(url)) if !text.is_empty() && !url.is_empty() => {
+                        // Copy to stack before reusing buffer
+                        let mut text_copy = heapless::String::<DISPLAY_TEXT_BUFFER_LENGTH>::new();
+                        let _ = text_copy.push_str(text);
+                        let mut url_copy = heapless::String::<DISPLAY_URL_BUFFER_LENGTH>::new();
+                        let _ = url_copy.push_str(url);
+                        match display_text_with_qr(&mut display, &text_copy, &url_copy, &mut buf)
+                            .await
+                        {
+                            Ok(_) => log::info!("Successfully displayed text with QR"),
+                            Err(e) => log::error!("Error displaying text with QR: {:?}", e),
+                        }
+                    }
+                    _ => {
+                        log::error!("Invalid UTF-8 or empty content in text/URL buffer");
+                    }
+                }
+                indicator.toggle();
+            }
             DisplayMessage::RawBinary => {
                 let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
 
@@ -179,6 +224,38 @@ pub fn queue_qr_display(
 
     // Try to send, drop oldest message if channel is full
     if channel.try_send(DisplayMessage::QRCode).is_err() {
+        log::warn!("Display channel full, message may be dropped");
+    }
+}
+
+/// Store text and URL in the display buffer and send message to display both
+/// Text will be displayed on the left side with a smaller font, QR code on the right
+pub fn queue_text_with_qr_display(
+    channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
+    text: &str,
+    url: &str,
+) {
+    if let Ok(mut buf) = UNIFIED_DISPLAY_BUFFER.try_lock() {
+        // Store text in first section
+        buf[..DISPLAY_TEXT_BUFFER_LENGTH].fill(0);
+        let text_bytes = text.as_bytes();
+        let text_len = core::cmp::min(text_bytes.len(), DISPLAY_TEXT_BUFFER_LENGTH);
+        buf[..text_len].copy_from_slice(&text_bytes[..text_len]);
+
+        // Store URL in second section
+        buf[DISPLAY_URL_BUFFER_OFFSET..DISPLAY_URL_BUFFER_OFFSET + DISPLAY_URL_BUFFER_LENGTH]
+            .fill(0);
+        let url_bytes = url.as_bytes();
+        let url_len = core::cmp::min(url_bytes.len(), DISPLAY_URL_BUFFER_LENGTH);
+        buf[DISPLAY_URL_BUFFER_OFFSET..DISPLAY_URL_BUFFER_OFFSET + url_len]
+            .copy_from_slice(&url_bytes[..url_len]);
+    } else {
+        log::warn!("Display buffer locked, skipping update");
+        return;
+    }
+
+    // Try to send, drop oldest message if channel is full
+    if channel.try_send(DisplayMessage::TextWithQR).is_err() {
         log::warn!("Display channel full, message may be dropped");
     }
 }
@@ -339,6 +416,75 @@ async fn display_qr_code(
 
     // Render QR code directly into the provided buffer
     qr.render_to_buffer::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(frame);
+
+    display_on
+        .update_and_save_frame::<FlashStorage>(frame, true)
+        .await
+        .map_err(|_| "Failed to update display")?;
+
+    display_on
+        .off(false)
+        .await
+        .map_err(|_| "Failed to turn off display")?;
+
+    Ok(())
+}
+
+/// Update the e-ink display with text and a QR code side by side
+/// Text is rendered on the left with a smaller font, QR code on the right
+async fn display_text_with_qr(
+    display: &mut Display<
+        'static,
+        SpiV2<'static, Async>,
+        esp_hal::gpio::Input<'static>,
+        Output<'static>,
+        EPD417_SIZE,
+        EPD417,
+        display::OFF,
+    >,
+    text: &str,
+    url: &str,
+    frame: &mut [u8; DISPLAY_SIZE_IN_BYTES],
+) -> Result<(), &'static str> {
+    log::info!("Updating display with text and QR code");
+
+    // Layout: Text on left (about 55% width), QR on right (about 45% width)
+    // Display is 400x300
+    const TEXT_WIDTH: u32 = 220; // Left side for text
+    const QR_AREA_WIDTH: u32 = 180; // Right side for QR
+    const QR_MAX_SIZE: u32 = 160; // Max QR size to leave some margin
+
+    // Calculate QR code scale to fit in right area
+    let base_qr = url::Qr::new(url).with_scale(1);
+    let base_size = base_qr.size().ok_or("Failed to generate QR code")?;
+
+    // Calculate scale that fits in QR area
+    let max_scale = QR_MAX_SIZE / base_size;
+    let scale = if max_scale < 1 { 1 } else { max_scale };
+    let qr_size = base_size * scale;
+
+    // Position QR code centered in right area
+    let qr_x = TEXT_WIDTH + ((QR_AREA_WIDTH - qr_size) / 2);
+    let qr_y = (DISPLAY_HEIGHT - qr_size) / 2;
+
+    let mut display_on = display
+        .on(false)
+        .await
+        .map_err(|_| "Failed to turn on display")?;
+
+    // First render text on the left side (this clears the buffer)
+    Text::new(text)
+        .with_font_size(FontSize::Medium6x12)
+        .with_max_width(TEXT_WIDTH - 10) // Leave small margin
+        .with_alignment(Alignment::Left)
+        .with_position(5, 20)
+        .render_to_buffer::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(frame);
+
+    // Then overlay QR code on the right side (doesn't clear)
+    url::Qr::new(url)
+        .with_position(qr_x as i32, qr_y as i32)
+        .with_scale(scale)
+        .render_to_buffer_overlay::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(frame);
 
     display_on
         .update_and_save_frame::<FlashStorage>(frame, true)

@@ -8,7 +8,8 @@ use serde::Serialize;
 use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::tasks::task_display_handler::{
     DISPLAY_CHANNEL_SIZE, DisplayMessage, append_to_display_buffer, queue_frame_ready,
-    queue_qr_display, queue_set_max_cycles, queue_text_display, reset_display_buffer,
+    queue_qr_display, queue_set_max_cycles, queue_text_display, queue_text_with_qr_display,
+    reset_display_buffer,
 };
 use crate::{AsyncStack, NotificationType};
 use embassy_futures::select::{Either3, select3};
@@ -29,7 +30,7 @@ use storage::storage::PersistentStorage;
 /// WIFI SSID
 pub const DEFAULT_SSID: &str = "HONESTWIFI-2325-2G";
 /// WIFI Password
-pub const DEFAULT_PASSWORD: &str = "9526070855!";
+pub const DEFAULT_PASSWORD: &str = "9526070850!1";
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
 
@@ -366,18 +367,19 @@ async fn task_wifi_runner_inner(
                 Timer::after(Duration::from_millis(200)).await;
                 log::info!("WiFi stopped");
 
-                // Now safe to display error message
-                if let Ok(text) = String::<512>::from_str(
-                    "WiFi Disconnected\n\n1. Check router\n   is online\n2. Verify 2.4GHz\n   network\n3. Check password\n\nTap NFC to update",
-                ) && previously_connected
-                {
-                    queue_text_display(display_channel, &text);
-                    log::info!("Queued WiFi error message for display");
+                // Now safe to display error message with QR code for support
+                if previously_connected {
+                    queue_text_with_qr_display(
+                        display_channel,
+                        "WiFi Disconnected\n\n1. Check router\n   is online\n2. Verify 2.4GHz\n   network\n3. Check password\n\nTap NFC to update\nor scan QR for help",
+                        "https://babu12345.github.io/portrait_v2_ios/",
+                    );
+                    log::info!("Queued WiFi error message with QR for display");
                 }
                 Timer::after(Duration::from_secs(5)).await;
                 previously_connected = false;
                 // Test reconnection with correct password
-                // password = Some(String::<64>::from_str("9526070855!").unwrap());
+                password = Some(String::<64>::from_str("9526070855!").unwrap());
                 // WiFi is already stopped, so needs_start will be true on next iteration
                 continue 'process;
             }
