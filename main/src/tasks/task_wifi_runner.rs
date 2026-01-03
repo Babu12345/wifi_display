@@ -33,6 +33,8 @@ pub const DEFAULT_SSID: &str = "HONESTWIFI-2325-2G";
 pub const DEFAULT_PASSWORD: &str = "9526070855!";
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
+const DEFAULT_QOS: rust_mqtt::packet::v5::publish_packet::QualityOfService =
+    rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS1;
 
 /// WiFi disconnection error message displayed with QR code for support
 const WIFI_DISCONNECTED_MSG: &str = "WiFi Disconnected\n\n\
@@ -775,7 +777,7 @@ async fn handle_live_mqtt_updates<'a>(
                                         .send_message(
                                             response_topic.as_str(),
                                             &response_buf[..len],
-                                            rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
+                                            DEFAULT_QOS,
                                             true,
                                         )
                                         .await
@@ -892,7 +894,7 @@ async fn handle_live_mqtt_updates<'a>(
                                         .send_message(
                                             response_topic.as_str(),
                                             &response_buf[..len],
-                                            rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
+                                            DEFAULT_QOS,
                                             true,
                                         )
                                         .await
@@ -975,7 +977,7 @@ async fn handle_live_mqtt_updates<'a>(
                                         .send_message(
                                             response_topic.as_str(),
                                             &response_buf[..len],
-                                            rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0,
+                                            DEFAULT_QOS,
                                             true,
                                         )
                                         .await
