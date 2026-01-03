@@ -106,7 +106,7 @@ async fn main(spawner: Spawner) {
     initalize_logger();
     let peripherals = initialize_peripherals();
 
-    esp_alloc::heap_allocator!(120 * 1024);
+    esp_alloc::heap_allocator!(130 * 1024);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sys_timer = SystemTimer::new(peripherals.SYSTIMER);
