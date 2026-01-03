@@ -69,7 +69,7 @@ pub async fn task_display_handler(
         match message {
             DisplayMessage::Text => {
                 indicator.toggle();
-                let buf = UNIFIED_DISPLAY_BUFFER.lock().await;
+                let mut buf = UNIFIED_DISPLAY_BUFFER.lock().await;
                 // Only use first DISPLAY_TEXT_BUFFER_LENGTH bytes for text
                 let text_slice = &buf[..DISPLAY_TEXT_BUFFER_LENGTH];
                 let len = text_slice
@@ -77,10 +77,15 @@ pub async fn task_display_handler(
                     .position(|&b| b == 0)
                     .unwrap_or(text_slice.len());
                 match core::str::from_utf8(&text_slice[..len]) {
-                    Ok(text) if !text.is_empty() => match display_text(&mut display, text).await {
-                        Ok(_) => log::info!("Successfully displayed text"),
-                        Err(e) => log::error!("Error displaying text: {:?}", e),
-                    },
+                    Ok(text) if !text.is_empty() => {
+                        // Copy text to stack before reusing buffer for rendering
+                        let mut text_copy = heapless::String::<DISPLAY_TEXT_BUFFER_LENGTH>::new();
+                        let _ = text_copy.push_str(text);
+                        match display_text(&mut display, &text_copy, &mut buf).await {
+                            Ok(_) => log::info!("Successfully displayed text"),
+                            Err(e) => log::error!("Error displaying text: {:?}", e),
+                        }
+                    }
                     Ok(_) => {} // Empty text, do nothing
                     Err(_) => {
                         log::error!("Invalid UTF-8 in text buffer");
@@ -223,8 +228,9 @@ pub fn queue_set_max_cycles(
 }
 
 /// Update the e-ink display with text
-async fn display_text<'a, 'b>(
-    display: &'a mut Display<
+/// Reuses the provided buffer for rendering to avoid extra static allocation
+async fn display_text(
+    display: &mut Display<
         'static,
         SpiV2<'static, Async>,
         esp_hal::gpio::Input<'static>,
@@ -233,7 +239,8 @@ async fn display_text<'a, 'b>(
         EPD417,
         display::OFF,
     >,
-    text: &'b str,
+    text: &str,
+    frame: &mut [u8; DISPLAY_SIZE_IN_BYTES],
 ) -> Result<(), &'static str> {
     log::info!("Updating display with text");
 
@@ -242,15 +249,16 @@ async fn display_text<'a, 'b>(
         .await
         .map_err(|_| "Failed to turn on display")?;
 
-    let mut frame = Text::new(text)
+    // Render text directly into the provided buffer
+    Text::new(text)
         .with_font_size(FontSize::ExtraLarge24)
         .with_max_width(400)
         .with_alignment(Alignment::Left)
         .with_position(1, 30)
-        .to_frame::<400, 300, { 400 * 300 / 8 }>();
+        .render_to_buffer::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(frame);
 
     display_on
-        .update_and_save_frame::<FlashStorage>(&mut frame, true)
+        .update_and_save_frame::<FlashStorage>(frame, true)
         .await
         .map_err(|_| "Failed to update display")?;
 
