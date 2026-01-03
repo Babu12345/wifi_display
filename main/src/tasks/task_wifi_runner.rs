@@ -49,6 +49,8 @@ Features:\n\
 - Display QR codes\n\
 - Bible verses\n\
 - Clock display\n\
+- Weather updates\n\
+- Stock prices\n\
 - And more!\n\n\
 Scan QR to start";
 
