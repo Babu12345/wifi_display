@@ -30,7 +30,7 @@ use storage::storage::PersistentStorage;
 /// WIFI SSID
 pub const DEFAULT_SSID: &str = "HONESTWIFI-2325-2G";
 /// WIFI Password
-pub const DEFAULT_PASSWORD: &str = "9526070850!1";
+pub const DEFAULT_PASSWORD: &str = "9526070855!1";
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
 
@@ -371,7 +371,7 @@ async fn task_wifi_runner_inner(
                 if previously_connected {
                     queue_text_with_qr_display(
                         display_channel,
-                        "WiFi Disconnected\n\n1. Check router\n   is online\n2. Verify 2.4GHz\n   network\n3. Check password\n\nTap NFC to update\nor scan QR for help",
+                        "WiFi Disconnected\n\n1. Check router\n   is online\n2. Use 2.4GHz\n   supported network\n3. Check password\n\nTap NFC to update\nor scan QR for help",
                         "https://babu12345.github.io/portrait_v2_ios/",
                     );
                     log::info!("Queued WiFi error message with QR for display");
