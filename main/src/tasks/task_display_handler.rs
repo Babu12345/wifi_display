@@ -474,10 +474,10 @@ async fn display_text_with_qr(
 
     // First render text on the left side (this clears the buffer)
     Text::new(text)
-        .with_font_size(FontSize::Medium6x12)
+        .with_font_size(FontSize::Large10x20)
         .with_max_width(TEXT_WIDTH - 10) // Leave small margin
         .with_alignment(Alignment::Left)
-        .with_position(5, 20)
+        .with_position(5, 25)
         .render_to_buffer::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(frame);
 
     // Then overlay QR code on the right side (doesn't clear)
