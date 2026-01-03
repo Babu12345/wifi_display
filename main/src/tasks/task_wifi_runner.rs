@@ -30,7 +30,7 @@ use storage::storage::PersistentStorage;
 /// WIFI SSID
 pub const DEFAULT_SSID: &str = "HONESTWIFI-2325-2G";
 /// WIFI Password
-pub const DEFAULT_PASSWORD: &str = "9526070855!1";
+pub const DEFAULT_PASSWORD: &str = "9526070855!";
 
 const REFRESH_INTERVAL_SECS: u64 = 60;
 
@@ -395,18 +395,11 @@ async fn task_wifi_runner_inner(
 
                 // Now safe to display error message with QR code for support
                 if previously_connected {
-                    queue_text_with_qr_display(
-                        display_channel,
-                        WIFI_DISCONNECTED_MSG,
-                        SUPPORT_URL,
-                    );
+                    queue_text_with_qr_display(display_channel, WIFI_DISCONNECTED_MSG, SUPPORT_URL);
                     log::info!("Queued WiFi error message with QR for display");
                 }
                 Timer::after(Duration::from_secs(5)).await;
                 previously_connected = false;
-                // Test reconnection with correct password
-                password = Some(String::<64>::from_str("9526070855!").unwrap());
-                // WiFi is already stopped, so needs_start will be true on next iteration
                 continue 'process;
             }
         }
