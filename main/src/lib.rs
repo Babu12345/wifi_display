@@ -17,8 +17,13 @@ use esp_hal::{clock::CpuClock, peripherals::Peripherals};
 /// Number of receivers for sending notifications
 pub const NUM_NOTIFICATION_RECEIVERS: usize = 1;
 
-/// Initialize the ESP32 logger capbilities
+/// Initialize the ESP32 logger capabilities
+/// In production mode, only warnings and errors are logged to save power
 pub fn initalize_logger() {
+    #[cfg(feature = "production")]
+    esp_println::logger::init_logger(log::LevelFilter::Warn);
+
+    #[cfg(not(feature = "production"))]
     esp_println::logger::init_logger(log::LevelFilter::Info);
 }
 

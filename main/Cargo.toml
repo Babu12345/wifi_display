@@ -3,6 +3,11 @@ name = "main"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+# Production mode: reduces logging to warnings/errors only for power savings
+production = []
+
 [dependencies]
 
 # Internal

@@ -29,5 +29,10 @@ f = "fmt"
 # Secure boot: build release binary and save as app.bin (run sign-and-flash.sh after)
 b = "build --release"
 
+# Production: reduced logging for power savings
+# For full power savings, also run: ESP_WIFI_CONFIG_PHY_ENABLE_USB=false cargo p
+p = "run --release --features production"
+pb = "build --release --features production"
+
 [net]
 git-fetch-with-cli = true
