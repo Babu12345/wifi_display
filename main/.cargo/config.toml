@@ -30,9 +30,13 @@ f = "fmt"
 b = "build --release"
 
 # Production: reduced logging for power savings
-# For full power savings, also run: ESP_WIFI_CONFIG_PHY_ENABLE_USB=false cargo p
 p = "run --release --features production"
 pb = "build --release --features production"
+
+[env]
+# Disable USB PHY for power savings in production (~10-20mA)
+# Serial logging via USB will not work, but flashing still works
+ESP_WIFI_CONFIG_PHY_ENABLE_USB = "false"
 
 [net]
 git-fetch-with-cli = true
