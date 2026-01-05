@@ -373,6 +373,15 @@ async fn task_wifi_runner_inner(
         match controller.connect_async().await {
             Ok(_) => {
                 log::info!("WiFi connected");
+
+                // Enable modem sleep for power saving while keeping WiFi connected
+                // Maximum: wakes only at listen interval (more power savings, may miss broadcasts)
+                // Minimum: wakes at every DTIM (less savings, won't miss broadcasts)
+                match controller.set_power_saving(esp_wifi::config::PowerSaveMode::Maximum) {
+                    Ok(_) => log::info!("Enabled Maximum power save mode (modem sleep)"),
+                    Err(e) => log::warn!("Failed to set power save mode: {:?}", e),
+                }
+
                 // Show reconnected message if we were previously disconnected
                 if !previously_connected {
                     queue_text_with_qr_display(
