@@ -914,6 +914,8 @@ async fn handle_live_mqtt_updates<'a>(
                             }
                             Err(e) => log::error!("Failed to parse config payload: {}", e),
                         }
+
+                        Timer::after_millis(10).await;
                     }
                     t if dynamic_topics.iter().any(|dt| dt.as_str() == t) => {
                         // Handle messages from dynamically subscribed topics (live updates)
