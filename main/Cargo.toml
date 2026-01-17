@@ -57,10 +57,10 @@ esp-mbedtls = { git = "https://github.com/Babu12345/esp-mbedtls/", package = "es
     "async",
 ] }
 
-nfc = { git = "ssh://git@github.com/Babu12345/rusty_nfc.git", default-features = false }
-error = { git = "ssh://git@github.com/Babu12345/eink_display.git", default-features = false }
-spi = { git = "ssh://git@github.com/Babu12345/eink_display.git", default-features = false }
-display = { git = "ssh://git@github.com/Babu12345/eink_display.git", default-features = false }
-storage = { git = "ssh://git@github.com/Babu12345/display_storage.git", default-features = false }
-text = { git = "ssh://git@github.com/Babu12345/eink_display.git", default-features = false }
-url = { git = "ssh://git@github.com/Babu12345/eink_display.git", default-features = false }
+nfc = { git = "ssh://git@github.com/Babu12345/rusty_nfc.git", rev = "218a383f63117874d91b0db852f3d4a21fef2e9f", default-features = false }
+error = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77627f1e685f99ffbe601720c71c3facbebb3d", default-features = false }
+spi = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77627f1e685f99ffbe601720c71c3facbebb3d", default-features = false }
+display = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77627f1e685f99ffbe601720c71c3facbebb3d", default-features = false }
+storage = { git = "ssh://git@github.com/Babu12345/display_storage.git", rev = "8ed5635518802ffac1abdb33569af6c573ecfcdb", default-features = false }
+text = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77627f1e685f99ffbe601720c71c3facbebb3d", default-features = false }
+url = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77627f1e685f99ffbe601720c71c3facbebb3d", default-features = false }
