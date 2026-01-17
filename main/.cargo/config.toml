@@ -38,15 +38,5 @@ pb = "build --release --features production"
 # Serial logging via USB will not work, but flashing still works
 ESP_WIFI_CONFIG_PHY_ENABLE_USB = "false"
 
-# # Increase listen interval for power savings (default: 3)
-# # With 100ms beacon interval, 10 = wake every 1 second instead of 300ms
-# # Reduces WiFi wake-ups by ~70% when using PowerSaveMode::Maximum
-# ESP_WIFI_CONFIG_LISTEN_INTERVAL = "10"
-
-# # Reduce WiFi buffers for lower RAM usage (MQTT doesn't need much bandwidth)
-# ESP_WIFI_CONFIG_STATIC_RX_BUF_NUM = "4"   # Default: 10
-# ESP_WIFI_CONFIG_DYNAMIC_RX_BUF_NUM = "12" # Default: 32
-# ESP_WIFI_CONFIG_DYNAMIC_TX_BUF_NUM = "12" # Default: 32
-
 [net]
 git-fetch-with-cli = true
