@@ -39,7 +39,7 @@ const DEFAULT_QOS: rust_mqtt::packet::v5::publish_packet::QualityOfService =
 /// WiFi disconnection error message displayed with QR code for support
 const WIFI_DISCONNECTED_MSG: &str = "WiFi Disconnected\n\n\
 1. Check router\n   is online\n\
-2. Use 2.4GHz\n   supported network\n\
+2. Use 2.4GHz or dual-band supported network\n\
 3. Check password\n\n\
 Tap NFC on the back\n\
 using the app to update or scan QR for help";
