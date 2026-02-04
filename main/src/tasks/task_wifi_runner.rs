@@ -436,7 +436,8 @@ async fn task_wifi_runner_inner(
                             // Already in LiveUpdates mode, ignore
                         }
                         NotificationType::WifiCredentials => {
-                            // Will be handled in the WiFi credentials check on next iteration
+                            // Force reload of WiFi credentials on next iteration
+                            ssid = None;
                         }
                     }
                 }
