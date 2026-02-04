@@ -41,8 +41,8 @@ const WIFI_DISCONNECTED_MSG: &str = "WiFi Disconnected\n\n\
 1. Check router\n   is online\n\
 2. Use 2.4GHz\n   supported network\n\
 3. Check password\n\n\
-Tap NFC to update\n\
-or scan QR for help";
+Tap NFC on the back\n\
+using the app to update or scan QR for help";
 
 /// WiFi connected message showing available features
 const WIFI_CONNECTED_MSG: &str = "WiFi Connected!\n\n\
