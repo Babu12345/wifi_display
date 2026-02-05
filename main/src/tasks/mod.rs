@@ -40,6 +40,7 @@ pub fn format_registration_response(code: &str) -> heapless::String<64> {
 }
 
 /// Check if text is a registration response (not meant for display)
+/// Checks for prefix only to handle potentially truncated/corrupted responses
 pub fn is_registration_response(text: &str) -> bool {
-    text.starts_with(REGISTRATION_PREFIX) && text.ends_with(REGISTRATION_SUFFIX)
+    text.starts_with(REGISTRATION_PREFIX)
 }
