@@ -296,6 +296,19 @@ async fn task_wifi_runner_inner(
             display_mode = DisplayMode::LiveUpdates;
         }
 
+        // Check for new WiFi credentials - must happen BEFORE display mode check
+        // so we can switch back to LiveUpdates mode when credentials are received
+        let credentials_updated = notification
+            .try_changed_and(|val| *val == NotificationType::WifiCredentials)
+            .inspect(|notif| log::info!("New credentials received via NFC: {notif:?}"))
+            .is_some();
+
+        if credentials_updated {
+            // WiFi credentials received - connect to WiFi and start MQTT
+            log::info!("New WiFi credentials received, connecting to WiFi and MQTT");
+            display_mode = DisplayMode::LiveUpdates;
+        }
+
         // Check display mode - skip WiFi for NFC-based display modes (low bandwidth)
         match display_mode {
             DisplayMode::LiveUpdates => {}
@@ -307,12 +320,7 @@ async fn task_wifi_runner_inner(
         }
 
         // Check for new WiFi credentials from NFC or loads from the storage if this is the first boot
-        if ssid.is_none()
-            || notification
-                .try_changed_and(|val| *val == NotificationType::WifiCredentials)
-                .inspect(|notif| log::info!("New credentials received via NFC: {notif:?}"))
-                .is_some()
-        {
+        if ssid.is_none() || credentials_updated {
             match load_wifi_credentials(&mut storage) {
                 Ok((new_ssid, new_password)) => {
                     log::info!(
