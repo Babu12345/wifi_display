@@ -64,8 +64,8 @@ const SUPPORT_URL: &str = "https://babu12345.github.io/portrait_v2_ios/support";
 
 const MQTT_BROKER_CSTR: &CStr = c"avbh2adibwzla-ats.iot.us-east-2.amazonaws.com";
 const MQTT_PORT: u16 = 8883; // TLS port
-// Client ID: Update this 6-character alphanumeric code for each board
-const MQTT_CLIENT_ID: &str = "000000";
+/// Client ID and UUID for the device: Update this 6-character alphanumeric code for each board
+pub const MQTT_CLIENT_ID: &str = "000001";
 const MQTT_TIMEOUT_SECS: u16 = 120;
 /// Max size in bytes of the data being sent via AWS
 pub const MQTT_BUFFER_SIZE: usize = 7_000;

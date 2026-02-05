@@ -2,7 +2,9 @@
 
 use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::NotificationType;
+use crate::tasks::task_wifi_runner::MQTT_CLIENT_ID;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, watch::Sender};
+use embassy_time::Duration;
 use embassy_time::Timer;
 use esp_hal::{
     Async,
@@ -45,7 +47,7 @@ pub async fn task_nfc(
         }
         Timer::after_millis(50).await;
         log::info!("Ready - try writing from your phone now");
-        match nfc.wait_and_get_data().await {
+        match nfc.wait_and_get_data(Duration::from_millis(1000)).await {
             Ok(data) => match data {
                 nfc::NFCData::Wifi(ref ssid, ref password) => {
                     log::info!("SSID: {ssid}, PSWD: {password}");
@@ -60,6 +62,11 @@ pub async fn task_nfc(
                     ) {
                         log::error!("Storage error: {e:?}");
                         continue 'process;
+                    }
+                    // Wait for phone's NFC field to settle before writing response
+                    match nfc.write_text(MQTT_CLIENT_ID).await {
+                        Ok(_) => log::info!("✓ Device UUID response written"),
+                        Err(e) => log::warn!("Write response failed (non-critical): {:?}", e),
                     }
                     notification.send(NotificationType::WifiCredentials);
                     log::info!("Successfully saved wifi in NVS")
