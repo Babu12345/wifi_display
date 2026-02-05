@@ -22,3 +22,11 @@ impl<const N: usize> MatchSliceLengths<N> for &[u8] {
         buffer
     }
 }
+
+/// Format a registration code response for NFC exchange
+/// Returns format: REG:C:<code>;; (similar to WIFI:S:ssid;P:password;;)
+pub fn format_registration_response(code: &str) -> heapless::String<64> {
+    let mut response = heapless::String::<64>::new();
+    let _ = core::fmt::write(&mut response, format_args!("REG:C:{};;", code));
+    response
+}

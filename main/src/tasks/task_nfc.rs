@@ -2,6 +2,7 @@
 
 use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::NotificationType;
+use crate::tasks::format_registration_response;
 use crate::tasks::task_wifi_runner::MQTT_CLIENT_ID;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, watch::Sender};
 use embassy_time::Duration;
@@ -63,9 +64,12 @@ pub async fn task_nfc(
                         log::error!("Storage error: {e:?}");
                         continue 'process;
                     }
-                    // Wait for phone's NFC field to settle before writing response
-                    match nfc.write_text(MQTT_CLIENT_ID).await {
-                        Ok(_) => log::info!("✓ Device UUID response written"),
+                    // Write registration code in a structured format for easy parsing
+                    match nfc
+                        .write_text(&format_registration_response(MQTT_CLIENT_ID))
+                        .await
+                    {
+                        Ok(_) => log::info!("✓ Device registration response written"),
                         Err(e) => log::warn!("Write response failed (non-critical): {:?}", e),
                     }
                     notification.send(NotificationType::WifiCredentials);
