@@ -23,10 +23,23 @@ impl<const N: usize> MatchSliceLengths<N> for &[u8] {
     }
 }
 
+/// Full prefix for registration response data (REG:C:)
+pub const REGISTRATION_PREFIX: &str = "REG:C:";
+/// Suffix for registration response data
+pub const REGISTRATION_SUFFIX: &str = ";;";
+
 /// Format a registration code response for NFC exchange
 /// Returns format: REG:C:<code>;; (similar to WIFI:S:ssid;P:password;;)
 pub fn format_registration_response(code: &str) -> heapless::String<64> {
     let mut response = heapless::String::<64>::new();
-    let _ = core::fmt::write(&mut response, format_args!("REG:C:{};;", code));
+    let _ = core::fmt::write(
+        &mut response,
+        format_args!("{}{}{}", REGISTRATION_PREFIX, code, REGISTRATION_SUFFIX),
+    );
     response
+}
+
+/// Check if text is a registration response (not meant for display)
+pub fn is_registration_response(text: &str) -> bool {
+    text.starts_with(REGISTRATION_PREFIX) && text.ends_with(REGISTRATION_SUFFIX)
 }

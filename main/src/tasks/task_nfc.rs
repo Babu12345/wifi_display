@@ -2,7 +2,7 @@
 
 use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::NotificationType;
-use crate::tasks::format_registration_response;
+use crate::tasks::{format_registration_response, is_registration_response};
 use crate::tasks::task_wifi_runner::MQTT_CLIENT_ID;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, watch::Sender};
 use embassy_time::Duration;
@@ -77,6 +77,12 @@ pub async fn task_nfc(
                 }
                 nfc::NFCData::Text(ref text) => {
                     log::info!("Text: {text}");
+
+                    // Skip registration response data (written by device, not meant for display)
+                    if is_registration_response(text.as_str()) {
+                        log::info!("Skipping registration response data");
+                        continue 'process;
+                    }
 
                     // Check for special command to trigger live updates mode
                     if text.as_str() == "LIVE_UPDATES" {
