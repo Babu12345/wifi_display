@@ -586,7 +586,8 @@ async fn handle_live_mqtt_updates<'a>(
     let mut recv_buffer = [0u8; MQTT_BUFFER_SIZE];
     let mut write_buffer = [0u8; MQTT_BUFFER_SIZE];
 
-    let mut client = MqttClient::<_, 3, _>::new(
+    // 3 reserved topics (raw, config, ping) + MAX_DYNAMIC_TOPICS (4) = 7
+    let mut client = MqttClient::<_, 7, _>::new(
         session,
         &mut write_buffer,
         MQTT_BUFFER_SIZE,
