@@ -623,6 +623,13 @@ async fn handle_live_mqtt_updates<'a>(
     )
     .map_err(|_| "Failed to format response topic")?;
 
+    let mut ping_topic = String::<64>::new();
+    core::fmt::write(
+        &mut ping_topic,
+        format_args!("{}/root/ping", MQTT_CLIENT_ID),
+    )
+    .map_err(|_| "Failed to format ping topic")?;
+
     // Load saved dynamic topics from storage
     let mut dynamic_topics = load_mqtt_topics();
 
@@ -660,6 +667,15 @@ async fn handle_live_mqtt_updates<'a>(
         Err(e) => {
             log::error!("MQTT config subscription error: {:?}", e);
             return Err("Failed to subscribe to config topic");
+        }
+    }
+
+    // Subscribe to ping topic (for connection testing)
+    match client.subscribe_to_topic(ping_topic.as_str()).await {
+        Ok(_) => log::info!("Subscribed to topic: {}", ping_topic.as_str()),
+        Err(e) => {
+            log::error!("MQTT ping subscription error: {:?}", e);
+            return Err("Failed to subscribe to ping topic");
         }
     }
 
@@ -823,6 +839,7 @@ async fn handle_live_mqtt_updates<'a>(
                                         new_topic,
                                         raw_topic.as_str(),
                                         config_topic.as_str(),
+                                        ping_topic.as_str(),
                                     ) {
                                         log::warn!(
                                             "Cannot subscribe to reserved topic: {}",
@@ -856,6 +873,7 @@ async fn handle_live_mqtt_updates<'a>(
                                         remove_topic,
                                         raw_topic.as_str(),
                                         config_topic.as_str(),
+                                        ping_topic.as_str(),
                                     ) {
                                         log::warn!(
                                             "Cannot unsubscribe from reserved topic: {}",
@@ -925,6 +943,29 @@ async fn handle_live_mqtt_updates<'a>(
                         }
 
                         Timer::after_millis(10).await;
+                    }
+                    t if t == ping_topic.as_str() => {
+                        // Handle ping requests - respond with success to test connection
+                        log::info!("Ping received, sending response");
+                        let response = MqttResponse {
+                            response: MqttResponseStatus::Success,
+                        };
+                        let mut response_buf = [0u8; 32];
+                        let len = serde_json_core::to_slice(&response, &mut response_buf)
+                            .expect("Failed to serialize ping response");
+                        if let Err(e) = client
+                            .send_message(
+                                response_topic.as_str(),
+                                &response_buf[..len],
+                                DEFAULT_QOS,
+                                true,
+                            )
+                            .await
+                        {
+                            log::warn!("Failed to publish ping response: {:?}", e);
+                        } else {
+                            log::info!("Ping response sent successfully");
+                        }
                     }
                     t if dynamic_topics.iter().any(|dt| dt.as_str() == t) => {
                         // Handle messages from dynamically subscribed topics (live updates)
@@ -1034,8 +1075,8 @@ async fn handle_live_mqtt_updates<'a>(
 }
 
 /// Check if a topic is a reserved core topic that cannot be dynamically subscribed/unsubscribed
-fn is_reserved_topic(topic: &str, raw_topic: &str, config_topic: &str) -> bool {
-    topic == raw_topic || topic == config_topic
+fn is_reserved_topic(topic: &str, raw_topic: &str, config_topic: &str, ping_topic: &str) -> bool {
+    topic == raw_topic || topic == config_topic || topic == ping_topic
 }
 
 /// Load WiFi credentials from storage
