@@ -48,20 +48,12 @@ pub async fn task_nfc(
         }
         Timer::after_millis(50).await;
         log::info!("Ready - try writing from your phone now");
-        match nfc.wait_and_get_data(Duration::from_millis(600)).await {
+        match nfc.wait_and_get_data(Duration::from_millis(1000)).await {
             Ok(data) => match data {
                 nfc::NFCData::Wifi(ref ssid, ref password) => {
                     log::info!("SSID: {ssid}, PSWD: {password}");
                     if let Err(e) = data.to_bytes(&mut storage_data) {
                         log::error!("Serialization error: {e:?}");
-                        continue 'process;
-                    }
-                    if let Err(e) = storage.write_bytes(
-                        storage::storage::StorageContents::WifiCredentials,
-                        0,
-                        &storage_data,
-                    ) {
-                        log::error!("Storage error: {e:?}");
                         continue 'process;
                     }
                     // Write registration code in a structured format for easy parsing
@@ -71,6 +63,15 @@ pub async fn task_nfc(
                     {
                         Ok(_) => log::info!("✓ Device registration response written"),
                         Err(e) => log::warn!("Write response failed (non-critical): {:?}", e),
+                    }
+
+                    if let Err(e) = storage.write_bytes(
+                        storage::storage::StorageContents::WifiCredentials,
+                        0,
+                        &storage_data,
+                    ) {
+                        log::error!("Storage error: {e:?}");
+                        continue 'process;
                     }
                     notification.send(NotificationType::WifiCredentials);
                     log::info!("Successfully saved wifi in NVS")
