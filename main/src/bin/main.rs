@@ -78,9 +78,9 @@ use nfc::{Nfc, STM25DV64KC};
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
     // Print panic info
-    log::info!("Panic occurred!");
+    log::error!("PANIC!");
     if let Some(location) = info.location() {
-        log::info!(
+        log::error!(
             "  at {}:{}:{}",
             location.file(),
             location.line(),
@@ -89,13 +89,18 @@ fn panic_handler(info: &PanicInfo) -> ! {
     }
 
     // Get and print backtrace
-    log::info!("Backtrace:");
+    log::error!("Backtrace:");
     let backtrace = esp_backtrace::arch::backtrace();
     for addr in backtrace.iter().flatten() {
-        log::info!("  0x{:x}", addr);
+        log::error!("  0x{:x}", addr);
     }
 
-    // Now reset the chip
+    // Brief delay to allow UART to flush
+    for _ in 0..50_000 {
+        core::hint::spin_loop();
+    }
+
+    // Full system reset
     software_reset();
     loop {}
 }
