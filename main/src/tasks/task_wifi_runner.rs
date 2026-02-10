@@ -32,7 +32,36 @@ pub const DEFAULT_SSID: &str = "HONESTWIFI-2325-2G";
 /// WIFI Password
 pub const DEFAULT_PASSWORD: &str = "9526070855!";
 
+// =============================================================================
+// TIMING CONFIGURATION
+// =============================================================================
+// These values are tuned for power savings with ESP_WIFI_CONFIG_LISTEN_INTERVAL=10
+// Increase delays if you see ImplementationSpecificError with higher listen intervals
+
+/// How long to wait after WiFi/MQTT errors before retrying
+const RETRY_DELAY_SECS: u64 = 5;
+
+/// Short delay for state transitions (WiFi stop/start, config changes)
+const TRANSITION_DELAY_MS: u64 = 200;
+
+/// Delay after processing config messages to allow radio to settle
+const CONFIG_PROCESS_DELAY_MS: u64 = 50;
+
+/// Main loop refresh interval when not connected to MQTT
 const REFRESH_INTERVAL_SECS: u64 = 60;
+
+/// MQTT connection and keep-alive timeout
+const MQTT_TIMEOUT_SECS: u16 = 120;
+
+/// MQTT ping interval as fraction of timeout (send ping at 60% of timeout)
+/// Lower fraction = more frequent pings = more reliable but more power usage
+const MQTT_PING_INTERVAL_SECS: u64 = (MQTT_TIMEOUT_SECS as u64) * 3 / 5;
+
+/// Buffer time subtracted from rate limiting calculations
+const RATE_LIMIT_BUFFER_SECS: u64 = 4;
+
+// =============================================================================
+
 const DEFAULT_QOS: rust_mqtt::packet::v5::publish_packet::QualityOfService =
     rust_mqtt::packet::v5::publish_packet::QualityOfService::QoS0;
 
@@ -66,7 +95,6 @@ const MQTT_BROKER_CSTR: &CStr = c"avbh2adibwzla-ats.iot.us-east-2.amazonaws.com"
 const MQTT_PORT: u16 = 8883; // TLS port
 /// Client ID and UUID for the device: Update this 6-character alphanumeric code for each board
 pub const MQTT_CLIENT_ID: &str = "000001";
-const MQTT_TIMEOUT_SECS: u16 = 120;
 /// Max size in bytes of the data being sent via AWS
 pub const MQTT_BUFFER_SIZE: usize = 7_000;
 /// Maximum number of dynamic topic subscriptions
@@ -254,7 +282,7 @@ async fn task_wifi_runner_inner(
             controller.disconnect_async().await.ok();
             controller.stop_async().await.ok();
 
-            Timer::after(Duration::from_secs(5)).await;
+            Timer::after(Duration::from_secs(RETRY_DELAY_SECS)).await;
             continue 'process;
         }
 
@@ -283,7 +311,7 @@ async fn task_wifi_runner_inner(
             controller.disconnect_async().await.ok();
             controller.stop_async().await.ok();
 
-            Timer::after(Duration::from_secs(5)).await;
+            Timer::after(Duration::from_secs(RETRY_DELAY_SECS)).await;
             continue 'process;
         }
 
@@ -314,7 +342,7 @@ async fn task_wifi_runner_inner(
             DisplayMode::LiveUpdates => {}
             DisplayMode::CustomText | DisplayMode::QRCode => {
                 log::info!("In NFC display mode, skipping wifi connection");
-                Timer::after(Duration::from_secs(5)).await;
+                Timer::after(Duration::from_secs(RETRY_DELAY_SECS)).await;
                 continue 'process;
             }
         }
@@ -365,12 +393,12 @@ async fn task_wifi_runner_inner(
             });
             if let Err(e) = controller.set_configuration(&client_config) {
                 log::error!("Failed to set WiFi configuration: {:?}", e);
-                Timer::after(Duration::from_secs(5)).await;
+                Timer::after(Duration::from_secs(RETRY_DELAY_SECS)).await;
                 continue 'process;
             }
             if let Err(e) = controller.start_async().await {
                 log::error!("Failed to start WiFi: {:?}", e);
-                Timer::after(Duration::from_secs(5)).await;
+                Timer::after(Duration::from_secs(RETRY_DELAY_SECS)).await;
                 continue 'process;
             }
             log::info!("WiFi started");
@@ -407,9 +435,9 @@ async fn task_wifi_runner_inner(
                 // Stop WiFi BEFORE displaying to avoid SPI/state conflicts
                 log::info!("Stopping WiFi before error display...");
                 controller.disconnect().ok();
-                Timer::after(Duration::from_millis(200)).await;
+                Timer::after(Duration::from_millis(TRANSITION_DELAY_MS)).await;
                 controller.stop().ok();
-                Timer::after(Duration::from_millis(200)).await;
+                Timer::after(Duration::from_millis(TRANSITION_DELAY_MS)).await;
                 log::info!("WiFi stopped");
 
                 // Now safe to display error message with QR code for support
@@ -417,7 +445,7 @@ async fn task_wifi_runner_inner(
                     queue_text_with_qr_display(display_channel, WIFI_DISCONNECTED_MSG, SUPPORT_URL);
                     log::info!("Queued WiFi error message with QR for display");
                 }
-                Timer::after(Duration::from_secs(5)).await;
+                Timer::after(Duration::from_secs(RETRY_DELAY_SECS)).await;
                 previously_connected = false;
                 continue 'process;
             }
@@ -461,7 +489,7 @@ async fn task_wifi_runner_inner(
             log::info!("WiFi stopped");
 
             // Wait before next iteration
-            Timer::after(Duration::from_secs(5)).await;
+            Timer::after(Duration::from_secs(RETRY_DELAY_SECS)).await;
             continue 'process;
         }
 
@@ -761,7 +789,7 @@ async fn handle_live_mqtt_updates<'a>(
         // Use select to await notification, ping timer, or MQTT message concurrently
         match select3(
             notification.changed(),
-            Timer::after(Duration::from_secs((MQTT_TIMEOUT_SECS * 3 / 4).into())),
+            Timer::after(Duration::from_secs(MQTT_PING_INTERVAL_SECS)),
             client.receive_message(),
         )
         .await
@@ -943,7 +971,7 @@ async fn handle_live_mqtt_updates<'a>(
                             Err(e) => log::error!("Failed to parse config payload: {}", e),
                         }
 
-                        Timer::after_millis(10).await;
+                        Timer::after(Duration::from_millis(CONFIG_PROCESS_DELAY_MS)).await;
                     }
                     t if t == ping_topic.as_str() => {
                         // Handle ping requests - respond with success to test connection
@@ -973,7 +1001,6 @@ async fn handle_live_mqtt_updates<'a>(
                         log::info!("Received live update from: {}", t);
 
                         // Check rate limiting BEFORE processing the chunk
-                        const RATE_LIMIT_BUFFER_SECS: u64 = 4;
                         let should_process = match decoding::parse_chunk_metadata(payload) {
                             Ok(metadata) => {
                                 let incoming_ts = metadata.timestamp;

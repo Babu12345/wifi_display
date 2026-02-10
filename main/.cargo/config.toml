@@ -38,5 +38,11 @@ pb = "build --release --features production"
 # Serial logging via USB will not work, but flashing still works
 ESP_WIFI_CONFIG_PHY_ENABLE_USB = "false"
 
+# Listen interval: how often station wakes to receive beacons from AP
+# Unit is beacon intervals (typically 100ms each)
+# Default is 3 (~300ms). Higher = more power savings, but may miss broadcasts
+# 10 = wake every ~1 second (good balance for display device)
+ESP_WIFI_CONFIG_LISTEN_INTERVAL = "10"
+
 [net]
 git-fetch-with-cli = true
