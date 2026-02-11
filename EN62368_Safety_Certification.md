@@ -36,14 +36,14 @@ The Paper Portait PCB is a low-power IoT device featuring:
 │  └──────────┬───────────┘                                                        │
 │             │ VBUS (5V)                                                          │
 │             ▼                                                                    │
-│  ┌──────────────────────┐     ┌─────────────────────┐                           │
-│  │  BATTERY CHARGER     │     │  BATTERY (ES2)      │                           │
-│  │  ══════════════════  │     │  ═══════════════    │                           │
-│  │  IC1: BQ24040DSQR    │◄───►│  J1, J3: Battery    │                           │
-│  │  D6: PG LED (Blue)   │     │  Connectors         │                           │
-│  │  D2: CHG LED (Red)   │     │  (620102131822)     │                           │
-│  │  R5: 2k (ISET)       │     └─────────────────────┘                           │
-│  │  R2: 1k (ITERM)      │                                                        │
+│  ┌──────────────────────┐     ┌─────────────────────┐  ┌─────────────────────┐ │
+│  │  BATTERY CHARGER     │     │  BATTERY (ES2)      │  │  SOLAR PANEL (ES3)  │ │
+│  │  ══════════════════  │     │  ═══════════════    │  │  ═══════════════    │ │
+│  │  IC1: BQ24040DSQR    │◄───►│  J1: Battery        │  │  J3: Solar Input    │ │
+│  │  D6: PG LED (Blue)   │     │  Connector          │  │  (620102131822)     │ │
+│  │  D2: CHG LED (Red)   │     │  (620102131822)     │  └──────────┬──────────┘ │
+│  │  R5: 2k (ISET)       │     └─────────────────────┘             │            │
+│  │  R2: 1k (ITERM)      │◄────────────────────────────────────────┘            │
 │  │  C17: 1uF (VCC)      │                                                        │
 │  │  C13: 22uF (OUT)     │                                                        │
 │  │  R8: 1.5k (PG)       │                                                        │
@@ -97,13 +97,14 @@ The Paper Portait PCB is a low-power IoT device featuring:
 |---------------|------|---------|---------------|----------------|
 | ES1 - USB | External DC | 5V | 500mA - 1.5A | ES1 (≤60V DC) |
 | ES2 - Battery | Internal DC | 3.7V nominal | Protected cell | ES1 (≤60V DC) |
-| ES3 - NFC Harvesting | RF Induced | <3.3V | <10mA | ES1 |
+| ES3 - Solar Panel | External DC (J3) | 4.2-6V | Panel dependent | ES1 (≤60V DC) |
+| ES4 - NFC Harvesting | RF Induced | <3.3V | <10mA | ES1 |
 
 **All circuits operate within ES1 classification - No hazardous voltage levels present.**
 
 ---
 
-## 4. USB-Connected Components (Critical for Safety Review)
+## 4. USB-Connected Components
 
 These components are directly in the USB power/data path and require special attention for EN 62368-1 compliance:
 
@@ -134,7 +135,7 @@ These components are directly in the USB power/data path and require special att
 | **R9** | 1 | ERJ-1GNF5101C | Panasonic | 5.1k ohm | R_0201 | **USB CC2 pin** |
 | **IC1** | 1 | BQ24040DSQR | Texas Instruments | - | SON40P200X200X80-11N | **Charger IC - thermal protection built-in** |
 | J1 | 1 | 620102131822 | Wurth Elektronik | - | 620102131822 | Battery connector |
-| J3 | 1 | 620102131822 | Wurth Elektronik | - | 620102131822 | Battery connector |
+| J3 | 1 | 620102131822 | Wurth Elektronik | - | 620102131822 | Solar panel charger input |
 | D2 | 1 | 150060RS75000 | Wurth Elektronik | Red LED | LED_0603 | CHG indicator |
 | D6 | 1 | 150060BS75000 | Wurth Elektronik | Blue LED | LED_0603 | Power Good indicator |
 | R2 | 1 | ERJ-1GNF1001C | Panasonic | 1k ohm | R_0201 | ITERM setting |
@@ -224,15 +225,6 @@ These components are directly in the USB power/data path and require special att
 3. **Overvoltage Protection:** TPS62172 operates within safe input range
 4. **ESD Protection:** USB connector rated for ESD per IEC 61000-4-2
 5. **Low Voltage Operation:** All circuits operate at ≤5V (ES1 classification)
-
-### 6.3 Required Testing
-
-- [ ] Dielectric strength test (not required for ES1)
-- [ ] Touch current measurement
-- [ ] Protective bonding continuity (if applicable)
-- [ ] Temperature rise testing
-- [ ] Abnormal operation testing (short circuit, component failure)
-- [ ] Battery charging safety tests per Annex Q
 
 ---
 
