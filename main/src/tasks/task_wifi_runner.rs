@@ -45,7 +45,7 @@ const RETRY_DELAY_SECS: u64 = 5;
 const TRANSITION_DELAY_MS: u64 = 200;
 
 /// Delay after processing config messages to allow radio to settle
-const CONFIG_PROCESS_DELAY_MS: u64 = 200;
+const CONFIG_PROCESS_DELAY_MS: u64 = 50;
 
 /// Main loop refresh interval when not connected to MQTT
 const REFRESH_INTERVAL_SECS: u64 = 60;
@@ -730,8 +730,6 @@ async fn handle_live_mqtt_updates<'a>(
                 "Unsubscribing from all {} dynamic topics",
                 dynamic_topics.len()
             );
-            // Delay before unsubscribing to let pending messages drain
-            Timer::after(Duration::from_millis(CONFIG_PROCESS_DELAY_MS)).await;
             while let Some(topic) = dynamic_topics.pop() {
                 // Note: unsubscribe may return ImplementationSpecificError if a message arrives
                 // during the operation. This is benign - the broker still processes the unsubscribe.
@@ -755,8 +753,6 @@ async fn handle_live_mqtt_updates<'a>(
                 .iter()
                 .position(|dt| dt.as_str() == topic.as_str())
             {
-                // Delay before unsubscribing to let pending messages drain
-                Timer::after(Duration::from_millis(CONFIG_PROCESS_DELAY_MS)).await;
                 match client.unsubscribe_from_topic(topic.as_str()).await {
                     Ok(_) => {
                         log::info!("Unsubscribed from: {}", topic.as_str());
@@ -774,9 +770,6 @@ async fn handle_live_mqtt_updates<'a>(
             }
         }
         if let Some(topic) = pending_subscribe.take() {
-            // Delay before subscribing to let pending messages drain
-            // This prevents ImplementationSpecificError when messages arrive during SUBACK
-            Timer::after(Duration::from_millis(CONFIG_PROCESS_DELAY_MS)).await;
             match client.subscribe_to_topic(topic.as_str()).await {
                 Ok(_) => {
                     log::info!("Subscribed to dynamic topic: {}", topic.as_str());
