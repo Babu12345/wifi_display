@@ -31,9 +31,10 @@ The Paper Portait PCB is a low-power IoT device featuring:
 │  │   ════════════════   │                                                        │
 │  │  J4: USB4105-GF-A    │◄── USB Type-C Connector                               │
 │  │  R7, R9: 5.1k ohms   │◄── CC1/CC2 Pull-downs (USB-C Detection)               │
+│  │  D7: SS2040FL        │◄── Schottky diode (reverse current protection)        │
 │  │                      │                                                        │
 │  └──────────┬───────────┘                                                        │
-│             │ VBUS (5V)                                                          │
+│             │ VBUS (5V) via D7                                                   │
 │             ▼                                                                    │
 │  ┌──────────────────────┐     ┌─────────────────────┐  ┌─────────────────────┐ │
 │  │  BATTERY CHARGER     │     │  BATTERY (ES2)      │  │  SOLAR PANEL (ES3)  │ │
@@ -110,9 +111,10 @@ These components are directly in the USB power/data path and require special att
 | Reference | Part Number | Manufacturer | Description | Safety Relevance |
 |-----------|-------------|--------------|-------------|------------------|
 | **J4** | USB4105-GF-A | GCT | USB Type-C Connector | Primary interface, ESD protection point |
+| **D7** | SS2040FL-AU_R1_000A1 | Panjit | Schottky Diode | Prevents reverse current to USB host |
 | **R7** | ERJ-1GNF5101C | Panasonic | 5.1k ohm (CC1) | USB-C configuration resistor |
 | **R9** | ERJ-1GNF5101C | Panasonic | 5.1k ohm (CC2) | USB-C configuration resistor |
-| **IC1** | BQ24040DSQR | Texas Instruments | Battery Charger IC | Receives VBUS directly, thermal protection |
+| **IC1** | BQ24040DSQR | Texas Instruments | Battery Charger IC | Receives VBUS via D7, thermal protection |
 | **C17** | CL03A105MO3NRNH | Samsung | 1uF/16V | Input filtering on USB side |
 
 ### USB Port Specifications
@@ -130,6 +132,7 @@ These components are directly in the USB power/data path and require special att
 | Ref | Qty | Part Number | Manufacturer | Value | Footprint | Safety Notes |
 |-----|-----|-------------|--------------|-------|-----------|--------------|
 | **J4** | 1 | USB4105-GF-A | GCT | USB-C | GCT_USB4105-GF-A | **USB INPUT - Primary safety interface** |
+| **D7** | 1 | SS2040FL-AU_R1_000A1 | Panjit | Schottky | SODFL3618X108N | **USB reverse current protection** |
 | **R7** | 1 | ERJ-1GNF5101C | Panasonic | 5.1k ohm | R_0201 | **USB CC1 pin** |
 | **R9** | 1 | ERJ-1GNF5101C | Panasonic | 5.1k ohm | R_0201 | **USB CC2 pin** |
 | **IC1** | 1 | BQ24040DSQR | Texas Instruments | - | SON40P200X200X80-11N | **Charger IC - thermal protection built-in** |
@@ -223,7 +226,8 @@ These components are directly in the USB power/data path and require special att
 2. **Thermal Protection:** BQ24040 reduces charge current at high temperatures
 3. **Overvoltage Protection:** TPS62172 operates within safe input range
 4. **ESD Protection:** USB connector rated for ESD per IEC 61000-4-2
-5. **Low Voltage Operation:** All circuits operate at ≤5V (ES1 classification)
+5. **Reverse Current Protection:** D7 Schottky diode prevents backfeed from battery/solar to USB host
+6. **Low Voltage Operation:** All circuits operate at ≤5V (ES1 classification)
 
 ---
 
