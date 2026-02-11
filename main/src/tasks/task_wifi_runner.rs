@@ -730,6 +730,8 @@ async fn handle_live_mqtt_updates<'a>(
                 "Unsubscribing from all {} dynamic topics",
                 dynamic_topics.len()
             );
+            // Delay before unsubscribing to let pending messages drain
+            Timer::after(Duration::from_millis(CONFIG_PROCESS_DELAY_MS)).await;
             while let Some(topic) = dynamic_topics.pop() {
                 // Note: unsubscribe may return ImplementationSpecificError if a message arrives
                 // during the operation. This is benign - the broker still processes the unsubscribe.
@@ -753,6 +755,8 @@ async fn handle_live_mqtt_updates<'a>(
                 .iter()
                 .position(|dt| dt.as_str() == topic.as_str())
             {
+                // Delay before unsubscribing to let pending messages drain
+                Timer::after(Duration::from_millis(CONFIG_PROCESS_DELAY_MS)).await;
                 match client.unsubscribe_from_topic(topic.as_str()).await {
                     Ok(_) => {
                         log::info!("Unsubscribed from: {}", topic.as_str());
