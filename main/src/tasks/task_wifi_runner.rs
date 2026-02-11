@@ -45,7 +45,7 @@ const RETRY_DELAY_SECS: u64 = 5;
 const TRANSITION_DELAY_MS: u64 = 200;
 
 /// Delay after processing config messages to allow radio to settle
-const CONFIG_PROCESS_DELAY_MS: u64 = 50;
+const CONFIG_PROCESS_DELAY_MS: u64 = 200;
 
 /// Main loop refresh interval when not connected to MQTT
 const REFRESH_INTERVAL_SECS: u64 = 60;
@@ -770,6 +770,9 @@ async fn handle_live_mqtt_updates<'a>(
             }
         }
         if let Some(topic) = pending_subscribe.take() {
+            // Delay before subscribing to let pending messages drain
+            // This prevents ImplementationSpecificError when messages arrive during SUBACK
+            Timer::after(Duration::from_millis(CONFIG_PROCESS_DELAY_MS)).await;
             match client.subscribe_to_topic(topic.as_str()).await {
                 Ok(_) => {
                     log::info!("Subscribed to dynamic topic: {}", topic.as_str());
