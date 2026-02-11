@@ -37,6 +37,8 @@ pub const DEFAULT_PASSWORD: &str = "9526070855!";
 // =============================================================================
 // These values are tuned for power savings with ESP_WIFI_CONFIG_LISTEN_INTERVAL=10
 // Increase delays if you see ImplementationSpecificError with higher listen intervals
+// NOTE: If ImplementationSpecificError persists, also increase UNSUBSCRIBE_DELAY_MS
+// in display_mqtt_utils layer
 
 /// How long to wait after WiFi/MQTT errors before retrying
 const RETRY_DELAY_SECS: u64 = 5;
