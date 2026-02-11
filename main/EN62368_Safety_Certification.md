@@ -1,10 +1,9 @@
 # Paper Portait PCB - EN 62368-1 Safety Certification Documentation
 
 **Document Version:** 1.0
-**Date:** 2025-01-28
+**Date:** 2026-02-11
 **Product:** Paper Portait PCB
 **Manufacturer:** Wanyeki Technologies LLC
-**Website:** https://wanyekitech.com/
 
 ---
 
@@ -241,7 +240,7 @@ These components are directly in the USB power/data path and require special att
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
-| 1.0 | 2025-01-28 | - | Initial release |
+| 1.0 | 2026-02-11 | - | Initial release |
 
 ---
 
