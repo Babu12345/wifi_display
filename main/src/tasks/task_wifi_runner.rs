@@ -22,6 +22,8 @@ use rand_core::CryptoRngCore;
 use core::cell::RefCell;
 use esp_hal::peripherals;
 use esp_hal::rng::Trng;
+use esp_hal::reset::reset_reason;
+use esp_hal::rtc_cntl::SocResetReason;
 use esp_storage::FlashStorage;
 use esp_wifi::wifi::{ClientConfiguration, Configuration, WifiController};
 use heapless::String;
@@ -257,6 +259,11 @@ async fn task_wifi_runner_inner(
     let mut previously_connected = true;
     let mut display_mode = DisplayMode::LiveUpdates;
 
+    // Check reset reason - skip status messages on brownout to preserve last displayed image
+    let reason = reset_reason();
+    log::info!("Reset reason: {:?}", reason);
+    let skip_status_messages = matches!(reason, Some(SocResetReason::SysBrownOut));
+
     // Main loop - refresh every REFRESH_INTERVAL_SECS seconds
     'process: loop {
         // Check for DisplayText notification (NFC - low bandwidth mode)
@@ -421,7 +428,8 @@ async fn task_wifi_runner_inner(
                 }
 
                 // Show reconnected message if we were previously disconnected
-                if !previously_connected {
+                // Skip on brownout/power-on to preserve last displayed image
+                if !previously_connected && !skip_status_messages {
                     queue_text_with_qr_display(
                         display_channel,
                         WIFI_CONNECTED_MSG,
@@ -443,7 +451,8 @@ async fn task_wifi_runner_inner(
                 log::info!("WiFi stopped");
 
                 // Now safe to display error message with QR code for support
-                if previously_connected {
+                // Skip on brownout/power-on to preserve last displayed image
+                if previously_connected && !skip_status_messages {
                     queue_text_with_qr_display(display_channel, WIFI_DISCONNECTED_MSG, SUPPORT_URL);
                     log::info!("Queued WiFi error message with QR for display");
                 }
