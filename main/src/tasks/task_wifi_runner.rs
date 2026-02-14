@@ -257,7 +257,7 @@ async fn task_wifi_runner_inner(
     let mut password: Option<String<64>> = None;
 
     let mut previously_connected = true;
-    let mut display_mode = DisplayMode::LiveUpdates;
+    let mut display_mode = load_display_mode();
 
     // Check reset reason - skip status messages on brownout to preserve last displayed image
     let reason = reset_reason();
@@ -272,7 +272,7 @@ async fn task_wifi_runner_inner(
             .is_some()
         {
             log::info!("DisplayText notification received (NFC)");
-            display_mode = DisplayMode::CustomText;
+            display_mode = set_display_mode(DisplayMode::CustomText);
 
             // Load and queue custom text for display
             match load_display_text(&mut storage) {
@@ -282,7 +282,7 @@ async fn task_wifi_runner_inner(
                 }
                 Err(e) => {
                     log::error!("Failed to load display text: {}", e);
-                    display_mode = DisplayMode::LiveUpdates;
+                    display_mode = set_display_mode(DisplayMode::LiveUpdates);
                 }
             }
 
@@ -301,7 +301,7 @@ async fn task_wifi_runner_inner(
             .is_some()
         {
             log::info!("DisplayURL notification received (NFC)");
-            display_mode = DisplayMode::QRCode;
+            display_mode = set_display_mode(DisplayMode::QRCode);
 
             // Load and queue QR code for display
             match load_display_url(&mut storage) {
@@ -311,7 +311,7 @@ async fn task_wifi_runner_inner(
                 }
                 Err(e) => {
                     log::error!("Failed to load URL: {}", e);
-                    display_mode = DisplayMode::LiveUpdates;
+                    display_mode = set_display_mode(DisplayMode::LiveUpdates);
                 }
             }
 
@@ -330,7 +330,7 @@ async fn task_wifi_runner_inner(
             .is_some()
         {
             log::info!("LiveSecureUpdates notification received - switching to MQTT mode");
-            display_mode = DisplayMode::LiveUpdates;
+            display_mode = set_display_mode(DisplayMode::LiveUpdates);
         }
 
         // Check for new WiFi credentials - must happen BEFORE display mode check
@@ -343,7 +343,7 @@ async fn task_wifi_runner_inner(
         if credentials_updated {
             // WiFi credentials received - connect to WiFi and start MQTT
             log::info!("New WiFi credentials received, connecting to WiFi and MQTT");
-            display_mode = DisplayMode::LiveUpdates;
+            display_mode = set_display_mode(DisplayMode::LiveUpdates);
         }
 
         // Check display mode - skip WiFi for NFC-based display modes (low bandwidth)
@@ -477,8 +477,12 @@ async fn task_wifi_runner_inner(
                     log::info!("MQTT session ended due to notification: {notif:?}");
                     // Process the notification that caused the exit
                     match notif {
-                        NotificationType::DisplayText => display_mode = DisplayMode::CustomText,
-                        NotificationType::DisplayURL => display_mode = DisplayMode::QRCode,
+                        NotificationType::DisplayText => {
+                            display_mode = set_display_mode(DisplayMode::CustomText);
+                        }
+                        NotificationType::DisplayURL => {
+                            display_mode = set_display_mode(DisplayMode::QRCode);
+                        }
                         NotificationType::LiveSecureUpdates => {
                             // Already in LiveUpdates mode, ignore
                         }
@@ -1369,6 +1373,61 @@ fn save_last_update_timestamp(timestamp_secs: u64) {
         ),
         Err(e) => log::error!("Failed to write last_update_timestamp: {:?}", e),
     }
+}
+
+/// Load display mode from flash storage
+/// Returns DisplayMode, defaulting to LiveUpdates if not set or invalid
+fn load_display_mode() -> DisplayMode {
+    let mut storage_buf = [0u8; 4];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    match storage.read(storage::storage::StorageContents::DisplayMode) {
+        Ok(data) => {
+            match data[0] {
+                0x00 => {
+                    log::info!("Loaded display mode: LiveUpdates");
+                    DisplayMode::LiveUpdates
+                }
+                0x01 => {
+                    log::info!("Loaded display mode: CustomText");
+                    DisplayMode::CustomText
+                }
+                0x02 => {
+                    log::info!("Loaded display mode: QRCode");
+                    DisplayMode::QRCode
+                }
+                _ => {
+                    // 0xFF (uninitialized) or invalid value
+                    log::info!("No saved display mode, defaulting to LiveUpdates");
+                    DisplayMode::LiveUpdates
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to read display mode: {:?}", e);
+            DisplayMode::LiveUpdates
+        }
+    }
+}
+
+/// Set and persist display mode to flash storage
+/// Returns the mode for assignment: `display_mode = set_display_mode(DisplayMode::CustomText);`
+fn set_display_mode(mode: DisplayMode) -> DisplayMode {
+    let mut storage_buf = [0u8; 4];
+    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+
+    let byte = match mode {
+        DisplayMode::LiveUpdates => 0x00,
+        DisplayMode::CustomText => 0x01,
+        DisplayMode::QRCode => 0x02,
+    };
+
+    match storage.write_bytes(storage::storage::StorageContents::DisplayMode, 0, &[byte]) {
+        Ok(_) => log::info!("Saved display mode: {:?}", mode),
+        Err(e) => log::error!("Failed to write display mode: {:?}", e),
+    }
+
+    mode
 }
 
 /// Process a raw binary chunk from MQTT payload

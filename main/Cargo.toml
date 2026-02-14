@@ -61,6 +61,6 @@ nfc = { git = "ssh://git@github.com/Babu12345/rusty_nfc.git", rev = "0796621c3fc
 error = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77627f1e685f99ffbe601720c71c3facbebb3d", default-features = false }
 spi = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77627f1e685f99ffbe601720c71c3facbebb3d", default-features = false }
 display = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77627f1e685f99ffbe601720c71c3facbebb3d", default-features = false }
-storage = { git = "ssh://git@github.com/Babu12345/display_storage.git", rev = "1f3e6bccae55f02dedb5bbbfafa5dc36a5b0010a", default-features = false }
+storage = { git = "ssh://git@github.com/Babu12345/display_storage.git", rev = "f96c4f8c7cef2a9874f16e6768c2e08db86d70c4", default-features = false }
 text = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77627f1e685f99ffbe601720c71c3facbebb3d", default-features = false }
 url = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77627f1e685f99ffbe601720c71c3facbebb3d", default-features = false }
