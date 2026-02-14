@@ -309,7 +309,16 @@ pub fn queue_set_max_cycles(
     }
 }
 
-/// Update the e-ink display with text
+/// Invert the display buffer (black <-> white)
+/// For 1-bit displays, this simply XORs each byte with 0xFF
+#[inline]
+fn invert_buffer(buffer: &mut [u8]) {
+    for byte in buffer.iter_mut() {
+        *byte ^= 0xFF;
+    }
+}
+
+/// Update the e-ink display with text (inverted: white text on black background)
 /// Reuses the provided buffer for rendering to avoid extra static allocation
 async fn display_text(
     display: &mut Display<
@@ -339,6 +348,9 @@ async fn display_text(
         .with_position(1, 30)
         .render_to_buffer::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(frame);
 
+    // Invert for white text on black background
+    invert_buffer(frame);
+
     display_on
         .update_and_save_frame::<FlashStorage>(frame, true)
         .await
@@ -352,7 +364,7 @@ async fn display_text(
     Ok(())
 }
 
-/// Update the e-ink display with a QR code from URL
+/// Update the e-ink display with a QR code from URL (inverted: white QR on black background)
 /// Reuses the provided buffer for rendering to avoid extra static allocation
 async fn display_qr_code(
     display: &mut Display<
@@ -416,6 +428,9 @@ async fn display_qr_code(
 
     // Render QR code directly into the provided buffer
     qr.render_to_buffer::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(frame);
+
+    // Invert for white QR on black background
+    invert_buffer(frame);
 
     display_on
         .update_and_save_frame::<FlashStorage>(frame, true)

@@ -12,7 +12,7 @@ use crate::tasks::task_display_handler::{
 };
 use crate::{AsyncStack, NotificationType};
 use crate::{NUM_NFC_CHANGE_RECEIVERS, NUM_NOTIFICATION_RECEIVERS};
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either3, select, select3};
 use embassy_net::{Runner, Stack};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel, watch::Receiver};
 use embassy_time::{Duration, Timer};
@@ -348,7 +348,9 @@ async fn task_wifi_runner_inner(
                     "In NFC display mode ({:?}), waiting for NFC changes...",
                     display_mode
                 );
-                Timer::after(Duration::from_secs(RETRY_DELAY_SECS)).await;
+                // Async wait for either notification type change or nfc_change counter change
+                // This is power-efficient - no polling, just waits for actual changes
+                select(notification.changed(), nfc_change.changed()).await;
                 continue 'process;
             }
         }
