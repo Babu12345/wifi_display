@@ -275,28 +275,14 @@ async fn task_wifi_runner_inner(
         // Reset credentials_updated flag at start of each iteration
         credentials_updated = false;
 
-        log::info!("Loop iteration start, display_mode={:?}", display_mode);
-
-        // Check for NFC data changes (handles all notification types including repeated same-type writes)
-        // Use notification.try_changed() FIRST to atomically detect change AND get new value
-        // This fixes race condition where try_get() could return stale value
-        // Fall back to nfc_change counter for same-type writes (where notification type didn't change)
-        let notif_changed = notification.try_changed();
-        let notif_type = if notif_changed.is_some() {
-            log::info!("notification.try_changed() = {:?}", notif_changed);
-            notif_changed
-        } else {
-            // If notification type didn't change, check if nfc_change counter changed
-            // (handles case where same notification type is sent twice, e.g., two different texts)
-            let nfc_counter = nfc_change.try_changed();
-            if let Some(counter) = nfc_counter {
-                log::info!("NFC change counter incremented to {} (same-type write), getting current notification", counter);
-                notification.try_get()
-            } else {
-                None
-            }
-        };
-        if let Some(notif_type) = notif_type {
+        // Check for NFC notifications:
+        // 1. notification.try_changed() detects new notification types
+        // 2. nfc_change counter detects same-type writes (e.g., two different texts)
+        if let Some(notif_type) = notification.try_changed().or_else(|| {
+            nfc_change
+                .try_changed()
+                .and_then(|_| notification.try_get())
+        }) {
             log::info!("Processing notification: {:?}", notif_type);
             match notif_type {
                 NotificationType::DisplayText => {
@@ -350,7 +336,9 @@ async fn task_wifi_runner_inner(
                     display_mode = set_display_mode(DisplayMode::LiveUpdates);
                 }
                 NotificationType::WifiCredentials => {
-                    log::info!("New WiFi credentials received via NFC, connecting to WiFi and MQTT");
+                    log::info!(
+                        "New WiFi credentials received via NFC, connecting to WiFi and MQTT"
+                    );
                     display_mode = set_display_mode(DisplayMode::LiveUpdates);
                     credentials_updated = true;
                 }
@@ -363,7 +351,10 @@ async fn task_wifi_runner_inner(
                 log::info!("Display mode is LiveUpdates, proceeding to WiFi");
             }
             DisplayMode::CustomText | DisplayMode::QRCode => {
-                log::info!("In NFC display mode ({:?}), waiting for NFC changes...", display_mode);
+                log::info!(
+                    "In NFC display mode ({:?}), waiting for NFC changes...",
+                    display_mode
+                );
                 Timer::after(Duration::from_secs(RETRY_DELAY_SECS)).await;
                 continue 'process;
             }
