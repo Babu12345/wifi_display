@@ -267,83 +267,76 @@ async fn task_wifi_runner_inner(
     log::info!("Reset reason: {:?}", reason);
     let skip_status_messages = matches!(reason, Some(SocResetReason::SysBrownOut));
 
-    // Track if credentials were updated this iteration
-    let mut credentials_updated;
-
     // Main loop - refresh every REFRESH_INTERVAL_SECS seconds
     'process: loop {
-        // Reset credentials_updated flag at start of each iteration
-        credentials_updated = false;
-
         // Check for NFC notifications:
         // 1. notification.try_changed() detects new notification types
         // 2. nfc_change counter detects same-type writes (e.g., two different texts)
-        if let Some(notif_type) = notification.try_changed().or_else(|| {
+        let pending_notification = notification.try_changed().or_else(|| {
             nfc_change
                 .try_changed()
                 .and_then(|_| notification.try_get())
-        }) {
-            log::info!("Processing notification: {:?}", notif_type);
-            match notif_type {
-                NotificationType::DisplayText => {
-                    log::info!("DisplayText notification received (NFC)");
-                    display_mode = set_display_mode(DisplayMode::CustomText);
+        });
 
-                    match load_display_text(&mut storage) {
-                        Ok(text) => {
-                            log::info!("Queueing custom text for display: {}", text.as_str());
-                            queue_text_display(display_channel, &text);
-                        }
-                        Err(e) => {
-                            log::error!("Failed to load display text: {}", e);
-                            display_mode = set_display_mode(DisplayMode::LiveUpdates);
-                        }
-                    }
+        let credentials_updated = match pending_notification {
+            Some(NotificationType::DisplayText) => {
+                log::info!("DisplayText notification received (NFC)");
+                display_mode = set_display_mode(DisplayMode::CustomText);
 
-                    // Only stop WiFi if it's actually running
-                    if matches!(controller.is_started(), Ok(true)) {
-                        log::info!("Stopping WiFi to save power...");
-                        controller.disconnect_async().await.ok();
-                        controller.stop_async().await.ok();
+                match load_display_text(&mut storage) {
+                    Ok(text) => {
+                        log::info!("Queueing custom text for display: {}", text.as_str());
+                        queue_text_display(display_channel, &text);
                     }
-                    continue 'process;
+                    Err(e) => {
+                        log::error!("Failed to load display text: {}", e);
+                        display_mode = set_display_mode(DisplayMode::LiveUpdates);
+                    }
                 }
-                NotificationType::DisplayURL => {
-                    log::info!("DisplayURL notification received (NFC)");
-                    display_mode = set_display_mode(DisplayMode::QRCode);
 
-                    match load_display_url(&mut storage) {
-                        Ok(url) => {
-                            log::info!("Queueing QR code for display: {}", url.as_str());
-                            queue_qr_display(display_channel, url.as_str());
-                        }
-                        Err(e) => {
-                            log::error!("Failed to load URL: {}", e);
-                            display_mode = set_display_mode(DisplayMode::LiveUpdates);
-                        }
-                    }
-
-                    // Only stop WiFi if it's actually running
-                    if matches!(controller.is_started(), Ok(true)) {
-                        log::info!("Stopping WiFi to save power...");
-                        controller.disconnect_async().await.ok();
-                        controller.stop_async().await.ok();
-                    }
-                    continue 'process;
+                // Only stop WiFi if it's actually running
+                if matches!(controller.is_started(), Ok(true)) {
+                    log::info!("Stopping WiFi to save power...");
+                    controller.disconnect_async().await.ok();
+                    controller.stop_async().await.ok();
                 }
-                NotificationType::LiveSecureUpdates => {
-                    log::info!("LiveSecureUpdates notification received - switching to MQTT mode");
-                    display_mode = set_display_mode(DisplayMode::LiveUpdates);
-                }
-                NotificationType::WifiCredentials => {
-                    log::info!(
-                        "New WiFi credentials received via NFC, connecting to WiFi and MQTT"
-                    );
-                    display_mode = set_display_mode(DisplayMode::LiveUpdates);
-                    credentials_updated = true;
-                }
+                continue 'process;
             }
-        }
+            Some(NotificationType::DisplayURL) => {
+                log::info!("DisplayURL notification received (NFC)");
+                display_mode = set_display_mode(DisplayMode::QRCode);
+
+                match load_display_url(&mut storage) {
+                    Ok(url) => {
+                        log::info!("Queueing QR code for display: {}", url.as_str());
+                        queue_qr_display(display_channel, url.as_str());
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load URL: {}", e);
+                        display_mode = set_display_mode(DisplayMode::LiveUpdates);
+                    }
+                }
+
+                // Only stop WiFi if it's actually running
+                if matches!(controller.is_started(), Ok(true)) {
+                    log::info!("Stopping WiFi to save power...");
+                    controller.disconnect_async().await.ok();
+                    controller.stop_async().await.ok();
+                }
+                continue 'process;
+            }
+            Some(NotificationType::LiveSecureUpdates) => {
+                log::info!("LiveSecureUpdates notification received - switching to MQTT mode");
+                display_mode = set_display_mode(DisplayMode::LiveUpdates);
+                false
+            }
+            Some(NotificationType::WifiCredentials) => {
+                log::info!("New WiFi credentials received via NFC, connecting to WiFi and MQTT");
+                display_mode = set_display_mode(DisplayMode::LiveUpdates);
+                true
+            }
+            None => false,
+        };
 
         // Check display mode - skip WiFi for NFC-based display modes (low bandwidth)
         match display_mode {
