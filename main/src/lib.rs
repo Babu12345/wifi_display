@@ -17,6 +17,9 @@ use esp_hal::{clock::CpuClock, peripherals::Peripherals};
 /// Number of receivers for sending notifications
 pub const NUM_NOTIFICATION_RECEIVERS: usize = 1;
 
+/// Number of receivers for NFC data change counter
+pub const NUM_NFC_CHANGE_RECEIVERS: usize = 1;
+
 /// Initialize the ESP32 logger capabilities
 /// In production mode, only warnings and errors are logged to save power
 pub fn initalize_logger() {

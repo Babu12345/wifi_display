@@ -66,7 +66,7 @@ use esp_hal_embassy::main;
 
 use esp_wifi::EspWifiController;
 use esp_wifi::wifi::WifiStaDevice;
-use main::NUM_NOTIFICATION_RECEIVERS;
+use main::{NUM_NFC_CHANGE_RECEIVERS, NUM_NOTIFICATION_RECEIVERS};
 use main::spi::SpiV2;
 use main::tasks::task_display_handler::{
     DISPLAY_CHANNEL_SIZE, DisplayMessage, task_display_handler,
@@ -188,7 +188,15 @@ async fn main(spawner: Spawner) {
     let sender = notif.sender();
     let receiver = notif.receiver().unwrap();
 
-    spawner.must_spawn(task_nfc(nfc, sender));
+    // NFC change counter - increments on each NFC write to detect repeated same-type writes
+    let nfc_change = mk_static!(
+        Watch<NoopRawMutex, u32, NUM_NFC_CHANGE_RECEIVERS>,
+        Watch::<NoopRawMutex, u32, NUM_NFC_CHANGE_RECEIVERS>::new()
+    );
+    let nfc_change_sender = nfc_change.sender();
+    let nfc_change_receiver = nfc_change.receiver().unwrap();
+
+    spawner.must_spawn(task_nfc(nfc, sender, nfc_change_sender));
     spawner.must_spawn(task_display_handler(display, display_channel, indicator));
     spawner.must_spawn(task_wifi_runner(
         stack,
@@ -196,6 +204,7 @@ async fn main(spawner: Spawner) {
         rng_ref,
         wifi_controller,
         receiver,
+        nfc_change_receiver,
         display_channel,
         peripherals.SHA,
         peripherals.RSA,

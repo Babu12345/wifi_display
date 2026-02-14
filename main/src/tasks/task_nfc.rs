@@ -1,9 +1,9 @@
 //! NFC tag monitoring and data processing
 
-use crate::NUM_NOTIFICATION_RECEIVERS;
 use crate::NotificationType;
 use crate::tasks::task_wifi_runner::MQTT_CLIENT_ID;
 use crate::tasks::{format_registration_response, is_registration_response};
+use crate::{NUM_NFC_CHANGE_RECEIVERS, NUM_NOTIFICATION_RECEIVERS};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, watch::Sender};
 use embassy_time::Duration;
 use embassy_time::Timer;
@@ -27,6 +27,7 @@ use storage::storage::PersistentStorage;
 pub async fn task_nfc(
     mut nfc: Nfc<STM25DV64KC, Input<'static>, Output<'static>, I2c<'static, Async>>,
     notification: Sender<'static, NoopRawMutex, NotificationType, NUM_NOTIFICATION_RECEIVERS>,
+    nfc_change: Sender<'static, NoopRawMutex, u32, NUM_NFC_CHANGE_RECEIVERS>,
 ) {
     // Initialize the NFC tag (formats NDEF and enables RF write access)
     log::info!("Initializing NFC tag...");
@@ -40,6 +41,7 @@ pub async fn task_nfc(
 
     let mut storage = PersistentStorage::new(FlashStorage::default(), &mut []);
     let mut storage_data = [0u8; MAX_NFCDATA_SIZE];
+    let mut change_counter: u32 = 0;
 
     'process: loop {
         if let Err(_) = nfc.depower_board().await {
@@ -74,7 +76,9 @@ pub async fn task_nfc(
                         continue 'process;
                     }
                     notification.send(NotificationType::WifiCredentials);
-                    log::info!("Successfully saved wifi in NVS")
+                    change_counter = change_counter.wrapping_add(1);
+                    nfc_change.send(change_counter);
+                    log::info!("Successfully saved wifi in NVS, nfc_change={}", change_counter)
                 }
                 nfc::NFCData::Text(ref text) => {
                     log::info!("Text: {text}");
@@ -82,14 +86,6 @@ pub async fn task_nfc(
                     // Skip registration response data (written by device, not meant for display)
                     if is_registration_response(text.as_str()) {
                         log::info!("Skipping registration response data");
-                        continue 'process;
-                    }
-
-                    // Check for special command to trigger live updates mode
-                    if text.as_str() == "LIVE_UPDATES" {
-                        log::info!("Live updates mode command received");
-                        notification.send(NotificationType::LiveSecureUpdates);
-                        log::info!("Switched to live updates mode");
                         continue 'process;
                     }
 
@@ -107,6 +103,9 @@ pub async fn task_nfc(
                         continue 'process;
                     }
                     notification.send(NotificationType::DisplayText);
+                    change_counter = change_counter.wrapping_add(1);
+                    nfc_change.send(change_counter);
+                    log::info!("Sent DisplayText notification, nfc_change={}", change_counter);
                 }
                 nfc::NFCData::Uri(ref uri) => {
                     log::info!("URI: {uri}");
@@ -123,6 +122,9 @@ pub async fn task_nfc(
                         continue 'process;
                     }
                     notification.send(NotificationType::DisplayURL);
+                    change_counter = change_counter.wrapping_add(1);
+                    nfc_change.send(change_counter);
+                    log::info!("Sent DisplayURL notification, nfc_change={}", change_counter);
                 }
                 nfc::NFCData::Unknown => log::error!("Unknown type"),
             },
