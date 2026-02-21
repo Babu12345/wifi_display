@@ -64,3 +64,12 @@ display = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77
 storage = { git = "ssh://git@github.com/Babu12345/display_storage.git", rev = "f96c4f8c7cef2a9874f16e6768c2e08db86d70c4", default-features = false }
 text = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77627f1e685f99ffbe601720c71c3facbebb3d", default-features = false }
 url = { git = "ssh://git@github.com/Babu12345/eink_display.git", rev = "0c77627f1e685f99ffbe601720c71c3facbebb3d", default-features = false }
+
+# Patch esp-wifi to use forked version with configurable TX power
+[patch.crates-io]
+esp-wifi = { git = "https://github.com/Babu12345/esp-hal", branch = "esp-wifi-0.12.0-power-config" }
+esp-hal = { git = "https://github.com/Babu12345/esp-hal", branch = "esp-wifi-0.12.0-power-config" }
+esp-alloc = { git = "https://github.com/Babu12345/esp-hal", branch = "esp-wifi-0.12.0-power-config" }
+esp-config = { git = "https://github.com/Babu12345/esp-hal", branch = "esp-wifi-0.12.0-power-config" }
+esp-build = { git = "https://github.com/Babu12345/esp-hal", branch = "esp-wifi-0.12.0-power-config" }
+esp-metadata = { git = "https://github.com/Babu12345/esp-hal", branch = "esp-wifi-0.12.0-power-config" }
