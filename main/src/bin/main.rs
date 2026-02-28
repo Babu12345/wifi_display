@@ -66,13 +66,13 @@ use esp_hal_embassy::main;
 
 use esp_wifi::EspWifiController;
 use esp_wifi::wifi::WifiStaDevice;
-use main::{NUM_NFC_CHANGE_RECEIVERS, NUM_NOTIFICATION_RECEIVERS};
 use main::spi::SpiV2;
 use main::tasks::task_display_handler::{
     DISPLAY_CHANNEL_SIZE, DisplayMessage, task_display_handler,
 };
 use main::tasks::task_nfc::task_nfc;
 use main::tasks::task_wifi_runner::task_wifi_runner;
+use main::{NUM_NFC_CHANGE_RECEIVERS, NUM_NOTIFICATION_RECEIVERS};
 use main::{NotificationType, initalize_logger, initialize_peripherals, mk_static};
 use nfc::{Nfc, STM25DV64KC};
 #[panic_handler]

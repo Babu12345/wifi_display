@@ -1248,6 +1248,10 @@ fn load_max_cycles() -> Option<u8> {
             }
             let cycles = u16::from_le_bytes([data[0], data[1]]);
             log::info!("Loaded max_cycles from storage: {}", cycles);
+            if cycles == 0 {
+                log::info!("Ignoring saved max_cycles of 0");
+                return None;
+            }
             Some(cycles as u8)
         }
         Err(e) => {
