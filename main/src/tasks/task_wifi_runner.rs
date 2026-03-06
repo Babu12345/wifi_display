@@ -673,6 +673,8 @@ async fn handle_live_mqtt_updates<'a>(
     )
     .map_err(|_| "Failed to format ping topic")?;
 
+    let reserved_topics: [&str; 3] = [raw_topic.as_str(), config_topic.as_str(), ping_topic.as_str()];
+
     // Load saved dynamic topics from storage
     let mut dynamic_topics = load_mqtt_topics();
 
@@ -878,12 +880,7 @@ async fn handle_live_mqtt_updates<'a>(
                             Ok(config) => {
                                 // Queue subscribe request (applied at start of next loop)
                                 if let Some(new_topic) = config.subscribe {
-                                    if is_reserved_topic(
-                                        new_topic,
-                                        raw_topic.as_str(),
-                                        config_topic.as_str(),
-                                        ping_topic.as_str(),
-                                    ) {
+                                    if is_reserved_topic(new_topic, &reserved_topics) {
                                         log::warn!(
                                             "Cannot subscribe to reserved topic: {}",
                                             new_topic
@@ -912,12 +909,7 @@ async fn handle_live_mqtt_updates<'a>(
 
                                 // Queue unsubscribe request (applied at start of next loop)
                                 if let Some(remove_topic) = config.unsubscribe {
-                                    if is_reserved_topic(
-                                        remove_topic,
-                                        raw_topic.as_str(),
-                                        config_topic.as_str(),
-                                        ping_topic.as_str(),
-                                    ) {
+                                    if is_reserved_topic(remove_topic, &reserved_topics) {
                                         log::warn!(
                                             "Cannot unsubscribe from reserved topic: {}",
                                             remove_topic
@@ -1117,8 +1109,8 @@ async fn handle_live_mqtt_updates<'a>(
 }
 
 /// Check if a topic is a reserved core topic that cannot be dynamically subscribed/unsubscribed
-fn is_reserved_topic(topic: &str, raw_topic: &str, config_topic: &str, ping_topic: &str) -> bool {
-    topic == raw_topic || topic == config_topic || topic == ping_topic
+fn is_reserved_topic(topic: &str, reserved: &[&str]) -> bool {
+    reserved.iter().any(|r| *r == topic)
 }
 
 /// Load WiFi credentials from storage
