@@ -42,12 +42,12 @@ ESP_WIFI_CONFIG_PHY_ENABLE_USB = "false"
 # Unit is beacon intervals (typically 100ms each)
 # Default is 3 (~300ms). Higher = more power savings, but may miss broadcasts
 # 10 = wake every ~1 second (good balance for display device)
-ESP_WIFI_CONFIG_LISTEN_INTERVAL = "10"
+ESP_WIFI_CONFIG_LISTEN_INTERVAL = "20"
 
 # Max TX power in dBm (range 8-20, default 20)
 # Lower values reduce power consumption but also reduce range
 # 12 = good balance for indoor use (~40% less TX power)
-ESP_WIFI_CONFIG_MAX_TX_POWER = "12"
+ESP_WIFI_CONFIG_MAX_TX_POWER = "8"
 
 [net]
 git-fetch-with-cli = true
