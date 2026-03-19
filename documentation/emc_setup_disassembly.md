@@ -25,17 +25,23 @@ To configure the EUT to operate continuously at highest current draw, the device
 
 The EUT requires a 2.4GHz 802.11 b/g/n WiFi access point within range. Set up a test access point or use an existing network.
 
-**Step 2: Write WiFi credentials via NFC**
+**Step 2: Install the app and sign in**
 
-1. Install the **Paper Portrait Connect** app on an iPhone (7 or later, iOS 14+)
-2. Create an account and tap **+** to register a new device
+1. Download **Paper Portrait Connect** from the Apple App Store on an iPhone (7 or later, iOS 14+)
+2. Sign in with the pre-configured test account (both test devices are already registered):
+   - **Login:** dolors-grids.4l@icloud.com
+   - **Password:** Testing_12
+
+**Step 3: Write WiFi credentials via NFC**
+
+1. Open the app — the two test devices will appear in the device list
+2. Tap the WiFi icon on a device card to update its WiFi credentials
 3. Enter the WiFi SSID and password for the test network
-4. Tap "Connect & Register Device"
+4. Tap "Write to Device"
 5. Hold the iPhone to the back of the EUT near the top (NFC tap area)
-6. Enter the 6-digit verification code shown on the display
-7. Tap "Verify & Register" to complete
+6. The device will connect to the test network
 
-**Step 3: Start a live update feature**
+**Step 4: Start a live update feature**
 
 From the app, select the registered device and choose a content type with a short update interval to maximize continuous radio and display activity:
 
@@ -44,6 +50,8 @@ From the app, select the registered device and choose a content type with a shor
 - **Stock Prices** with 5-minute update interval
 
 This keeps the device in a continuous cycle of: WiFi receive (MQTT) -> CPU decode -> eInk display refresh.
+
+Further instructions are in the user manual: https://babu12345.github.io/portrait_v2_ios/manual/
 
 ### Maximum Power Draw Operating Conditions
 
@@ -54,7 +62,6 @@ This keeps the device in a continuous cycle of: WiFi receive (MQTT) -> CPU decod
 | eInk Display | Full refresh every 1-5 minutes (400x300 pixels, SPI at 20 MHz) |
 | NFC (STM25DV64KC) | Idle (powered but not actively scanning once registered) |
 | USB-C Charging | Active if cable connected (BQ24040 charging IC) |
-| Solar Cell | Contributes if illuminated (SM400K10TF) |
 
 ### Estimated Current Draw
 
@@ -90,7 +97,6 @@ The EUT is operating at maximum power when:
 3. **Disconnect the battery** — locate the lithium battery connector and carefully unplug it from the PCB header. Do this before handling the board.
 4. **Remove the PCB** — unscrew any fasteners securing the PCB to the enclosure. Note the positions of:
    - eInk display ribbon cable (fragile, top side)
-   - Solar cell wires (top)
    - NFC antenna connection
 5. **Separate the eInk display** — if needed, gently release the FPC connector latch and slide the ribbon cable out. Do not bend or crease the ribbon cable.
 
@@ -103,7 +109,6 @@ The EUT is operating at maximum power when:
 | BQ24040 | Near USB-C port | Battery charging IC |
 | eInk display (400x300) | Front, connected via FPC ribbon | Fragile — handle by edges only |
 | Lithium battery | Between PCB and back cover | Do not puncture or short-circuit |
-| Solar cell (SM400K10TF) | Top, above display | Connected via wires to charging circuit |
 | Power switch | Back left side | Mechanical switch |
 | LEDs (D2-D5) | Back right side | D2 = charge, D3-D5 = status |
 
