@@ -79,7 +79,7 @@ The EUT is operating at maximum power when:
 
 ### Tools Required
 
-- Phillips #0 screwdriver (or appropriate for enclosure fasteners)
+- Phillips #0 screwdriver (M2 screws)
 - Plastic spudger or pry tool
 - Anti-static wrist strap (recommended)
 
