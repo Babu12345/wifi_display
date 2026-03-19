@@ -14,7 +14,7 @@
 
 1. Connect a USB-C cable to the port on the right side of the device
 2. Connect the other end to a 5V USB power adapter (1A minimum)
-3. Turn on the device using the power switch on the back left side (short press)
+3. Turn on the device using the toggle switch on the back left side (slide up to power on)
 4. The charge LED (D2) on the back will illuminate while charging
 
 ### Configuring for Maximum Power Draw
@@ -92,13 +92,14 @@ The EUT is operating at maximum power when:
 
 ### Disassembly Steps
 
-1. **Power off** the device using the power switch (short press) and disconnect the USB-C cable
-2. **Remove the back cover** — pry gently at the seam using a plastic spudger, working around the edges. Take care near the USB-C port and switch openings.
-3. **Disconnect the battery** — locate the lithium battery connector and carefully unplug it from the PCB header. Do this before handling the board.
-4. **Remove the PCB** — unscrew any fasteners securing the PCB to the enclosure. Note the positions of:
+1. **Power off** the device by sliding the toggle switch down and disconnect the USB-C cable
+2. **Remove the 4 M2 screws** that hold the top and bottom enclosure pieces together
+3. **Separate the two enclosure halves** — gently pull apart. Take care near the USB-C port and switch openings.
+4. **Disconnect the battery** — locate the lithium battery connector and carefully unplug it from the PCB header. Do this before handling the board.
+5. **Lift out the PCB** — the PCB is not fastened to the enclosure. Note the positions of:
    - eInk display ribbon cable (fragile, top side)
    - NFC antenna connection
-5. **Separate the eInk display** — if needed, gently release the FPC connector latch and slide the ribbon cable out. Do not bend or crease the ribbon cable.
+6. **Separate the eInk display** — if needed, gently release the FPC connector latch and slide the ribbon cable out. Do not bend or crease the ribbon cable.
 
 ### Key Internal Components
 
@@ -109,7 +110,7 @@ The EUT is operating at maximum power when:
 | BQ24040 | Near USB-C port | Battery charging IC |
 | eInk display (400x300) | Front, connected via FPC ribbon | Fragile — handle by edges only |
 | Lithium battery | Between PCB and back cover | Do not puncture or short-circuit |
-| Power switch | Back left side | Mechanical switch |
+| Power switch | Back left side | Toggle switch (up = on, down = off) |
 | LEDs (D2-D5) | Back right side | D2 = charge, D3-D5 = status |
 
 ### Reassembly Notes
@@ -117,7 +118,7 @@ The EUT is operating at maximum power when:
 - Reconnect the battery connector before securing the PCB
 - Ensure the eInk ribbon cable is fully seated and the FPC latch is closed
 - Verify the power switch and USB-C port align with their enclosure openings
-- After reassembly, short-press the power switch to verify the device powers on
+- After reassembly, slide the toggle switch up to verify the device powers on
 
 ---
 
