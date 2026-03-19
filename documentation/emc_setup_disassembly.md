@@ -58,7 +58,7 @@ Further instructions are in the user manual: https://babu12345.github.io/portrai
 | Component | State During Max Power |
 |-----------|----------------------|
 | WiFi Radio | Active — TLS 1.3 MQTT connection, TX at 12 dBm, periodic keep-alive pings |
-| CPU (ESP32-C3) | 80 MHz idle, bursts to 160 MHz during TLS handshake and frame decoding |
+| CPU (ESP32-C3) | 80 MHz continuous |
 | eInk Display | Full refresh every 1-5 minutes (400x300 pixels, SPI at 20 MHz) |
 | NFC (STM25DV64KC) | Idle (powered but not actively scanning once registered) |
 | USB-C Charging | Active if cable connected (BQ24040 charging IC) |
