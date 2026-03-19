@@ -63,7 +63,7 @@ Further instructions are in the user manual: https://babu12345.github.io/portrai
 | NFC (STM25DV64KC) | Idle (powered but not actively scanning once registered) |
 | USB-C Charging | Active if cable connected (BQ24040 charging IC) |
 
-### Estimated Current Draw
+### Estimated Current Draw (approximate, not measured)
 
 | Mode | Approximate Current (3.3V rail) |
 |------|-------------------------------|
