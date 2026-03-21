@@ -94,13 +94,13 @@ The EUT is operating at maximum power when:
 
 ### Tools Required
 
-- Phillips #0 screwdriver (M2 screws)
+- Hex key/Allen wrench for M2 socket head cap screws
 - Anti-static wrist strap (recommended)
 
 ### Disassembly Steps
 
 1. **Power off** the device by sliding the toggle switch down and disconnect the USB-C cable
-2. **Remove the 4 M2 screws** that hold the top and bottom enclosure pieces together
+2. **Remove the 4 M2 socket head cap screws** that hold the top and bottom enclosure pieces together
 3. **Separate the two enclosure halves** — gently pull apart. Take care near the USB-C port and switch openings.
 4. **Disconnect the battery** — locate the lithium battery connector and carefully unplug it from the PCB header. Do this before handling the board.
 5. **Lift out the PCB** — the PCB is not fastened to the enclosure. Note the positions of:
