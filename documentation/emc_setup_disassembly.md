@@ -14,8 +14,8 @@
 
 1. Connect a USB-C cable to the port on the right side of the device
 2. Connect the other end to a 5V USB power adapter (1A minimum)
-3. Turn on the device using the toggle switch on the back left side (slide up to power on)
-4. The charge LED (D2) on the back will illuminate while charging
+3. Turn on the device using the toggle switch on the side (slide up to power on)
+4. The blue LED indicates power is connected, and the red LED will illuminate while the battery is charging
 
 ### Configuring for Maximum Power Draw
 
@@ -32,6 +32,15 @@ The EUT requires a 2.4GHz 802.11 b/g/n WiFi access point within range. Set up a 
    - **Login:** dolors-grids.4l@icloud.com
    - **Password:** Testing_12
 
+**Test Devices:**
+
+Each device has a label on the back with its Device ID.
+
+| Device | Device ID | Battery Status |
+|--------|-----------|---------------|
+| Test Device 1 | 000002 | Full charge |
+| Test Device 2 | 000003 | Battery drained — charge before use |
+
 **Step 3: Write WiFi credentials via NFC**
 
 1. Open the app — the two test devices will appear in the device list
@@ -46,8 +55,7 @@ The EUT requires a 2.4GHz 802.11 b/g/n WiFi access point within range. Set up a 
 From the app, select the registered device and choose a content type with a short update interval to maximize continuous radio and display activity:
 
 - **Clock** with 1-minute update interval, OR
-- **MTA Transit** with 1-minute update interval, OR
-- **Stock Prices** with 5-minute update interval
+- **Bible Verse** with 1-minute update interval
 
 This keeps the device in a continuous cycle of: WiFi receive (MQTT) -> CPU decode -> eInk display refresh.
 
@@ -77,7 +85,7 @@ Further instructions are in the user manual: https://babu12345.github.io/portrai
 The EUT is operating at maximum power when:
 
 - The display is periodically refreshing with new content (visible brief black/white flash every 1-5 minutes)
-- Status LEDs (D3/D4/D5) on the back indicate activity
+- The blue LED on the back indicates power is connected
 - The device is warm to the touch near the ESP32-C3 module
 
 ---
@@ -109,8 +117,9 @@ The EUT is operating at maximum power when:
 | BQ24040 | Near USB-C port | Battery charging IC |
 | eInk display (400x300) | Front, connected via FPC ribbon | Fragile — handle by edges only |
 | Lithium battery | Between PCB and back cover | Do not puncture or short-circuit |
-| Power switch | Back left side | Toggle switch (up = on, down = off) |
-| LEDs (D2-D5) | Back right side | D2 = charge, D3-D5 = status |
+| Power switch | Side | Toggle switch (up = on, down = off) |
+| LEDs (D2, D3) | Back right side | D2 = power connected (blue), D3 = battery charging (red) |
+| Restart button | Back | Press to reboot the device if unresponsive |
 
 ### Reassembly Notes
 
