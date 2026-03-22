@@ -568,7 +568,9 @@ async fn handle_live_mqtt_updates<'a>(
     let mut rx_buffer = MQTT_TCP_RX_BUFFER.lock().await;
     let mut tx_buffer = MQTT_TCP_TX_BUFFER.lock().await;
     let mut socket = TcpSocket::new(stack.clone(), &mut *rx_buffer, &mut *tx_buffer);
-    socket.set_timeout(Some(Duration::from_secs(MQTT_TIMEOUT_SECS as u64 + SOCKET_TIMEOUT_HEADROOM_SECS)));
+    socket.set_timeout(Some(Duration::from_secs(
+        MQTT_TIMEOUT_SECS as u64 + SOCKET_TIMEOUT_HEADROOM_SECS,
+    )));
 
     // Connect to MQTT broker
     log::info!("Connecting to MQTT broker...");
