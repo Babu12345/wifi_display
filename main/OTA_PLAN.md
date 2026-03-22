@@ -64,7 +64,11 @@ The bootloader must have OTA support enabled (it does by default when `otadata` 
 
 ## Phase 2: OTA Download Mechanism
 
-Firmware binaries are too large for MQTT (7 KB buffer). Use MQTT as the **trigger**, HTTPS as the **transport**.
+Use MQTT as the **trigger** and HTTPS as the **transport**. MQTT delivers a small message with the firmware URL; the device downloads the binary over HTTPS with full TCP reliability.
+
+### Why HTTPS instead of MQTT chunks
+
+The existing MQTT chunked pattern works well for display frames (~15-50 KB), but firmware is ~1.2 MB (~300 chunks at QoS0). A single lost chunk means restarting the entire transfer. HTTPS gives TCP-level reliability (retransmits, ordering, flow control) for free, and the TLS stack (`esp-mbedtls`) is already in use.
 
 ### Flow
 
@@ -77,15 +81,15 @@ Firmware binaries are too large for MQTT (7 KB buffer). Use MQTT as the **trigge
 3. Device opens HTTPS connection to the URL
    - Reuses existing TLS stack (esp-mbedtls)
    - Downloads in 4 KB chunks
-   - Writes each chunk to the inactive OTA partition
+   - Writes each chunk directly to the inactive OTA partition
 
 4. After full download, device:
-   - Verifies size matches expected
+   - Verifies total bytes written matches expected size
    - Sets the new partition as boot target
    - Sends MQTT ACK: { "ota_status": "success", "version": "1.2.0" }
    - Reboots
 
-5. New firmware boots, validates (connects to MQTT), calls mark_valid()
+5. New firmware boots, validates (connects to WiFi + MQTT), calls mark_valid()
    - If validation fails after N boots, bootloader auto-rolls back
 ```
 
@@ -97,7 +101,7 @@ Add a new reserved topic alongside `raw`, `config`, and `ping`:
 {client_id}/root/ota
 ```
 
-Update `MAX_DYNAMIC_TOPICS` or the static topic count (currently `3 reserved + 4 dynamic = 7`) to account for the new topic.
+Update the static topic count from 7 to 8 (4 reserved + 4 dynamic) in `MqttClient::<_, 8, _>::new(...)`.
 
 ### OTA Trigger Message Schema
 
@@ -109,9 +113,9 @@ Update `MAX_DYNAMIC_TOPICS` or the static topic count (currently `3 reserved + 4
 }
 ```
 
-- `url`: HTTPS endpoint hosting the signed firmware binary
+- `url`: HTTPS endpoint hosting the signed firmware binary (e.g., S3 presigned URL)
 - `version`: Human-readable version string (for logging/ACK)
-- `size`: Expected size in bytes (for validation before rebooting)
+- `size`: Expected size in bytes (for validation before finalizing)
 
 ---
 
@@ -120,11 +124,11 @@ Update `MAX_DYNAMIC_TOPICS` or the static topic count (currently `3 reserved + 4
 ### New module: `main/src/ota.rs`
 
 Responsibilities:
-1. Parse OTA trigger message (deserialize JSON)
+1. Parse OTA trigger message (deserialize JSON from MQTT payload)
 2. Open HTTPS GET connection to firmware URL
 3. Find the inactive OTA partition
-4. Write firmware chunks to flash
-5. Validate downloaded size
+4. Stream response body in 4 KB chunks, writing each to flash
+5. Validate total bytes written against expected size
 6. Set new partition as boot target
 7. Return result for MQTT ACK
 
@@ -149,8 +153,8 @@ t if t == ota_topic.as_str() => {
     match ota::perform_update(payload, stack, tls).await {
         Ok(version) => {
             // Publish ACK
-            let ack = format!("{{\"ota_status\":\"success\",\"version\":\"{}\"}}", version);
-            client.send_message(ota_topic.as_str(), ack.as_bytes(), ...).await.ok();
+            let ack = b"{\"ota_status\":\"success\"}";
+            client.send_message(ota_topic.as_str(), ack, ...).await.ok();
             // Disconnect cleanly and reboot
             client.disconnect().await.ok();
             esp_hal::reset::software_reset();
@@ -192,6 +196,7 @@ cargo build --release
 espflash save-image --chip esp32c3 target/riscv32imc-unknown-none-elf/release/main firmware.bin
 espsecure.py sign_data --version 2 --keyfile secure_boot_signing_key.pem firmware.bin
 # Upload signed firmware.bin to HTTPS hosting (S3, etc.)
+# Then publish MQTT trigger with the URL
 ```
 
 The secure bootloader verifies the signature on boot. If the downloaded binary is unsigned or signed with the wrong key, the bootloader rejects it and rolls back automatically.
@@ -227,7 +232,7 @@ Enable in esp-idf menuconfig when rebuilding the bootloader:
 2. **`ota.rs` module** — HTTPS download + OTA write logic
 3. **MQTT integration** — Add OTA topic, trigger handler, ACK/NACK
 4. **First-boot validation** — `mark_valid()` after successful MQTT connection
-5. **Server-side** — Build pipeline to sign + upload firmware to HTTPS endpoint
+5. **Server-side** — Build pipeline to sign + upload firmware to S3, MQTT trigger script
 6. **Testing** — Test with development mode first (UART recovery available), then production
 
 ---
