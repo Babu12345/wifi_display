@@ -55,11 +55,13 @@ const CONFIG_PROCESS_DELAY_MS: u64 = 50;
 const REFRESH_INTERVAL_SECS: u64 = 60;
 
 /// MQTT connection and keep-alive timeout
-const MQTT_TIMEOUT_SECS: u16 = 120;
+const MQTT_TIMEOUT_SECS: u16 = 300;
 
-/// MQTT ping interval as fraction of timeout (send ping at 60% of timeout)
-/// Lower fraction = more frequent pings = more reliable but more power usage
-const MQTT_PING_INTERVAL_SECS: u64 = (MQTT_TIMEOUT_SECS as u64) * 3 / 5;
+/// Extra seconds added to socket timeout beyond keep-alive for headroom
+const SOCKET_TIMEOUT_HEADROOM_SECS: u64 = 30;
+
+/// MQTT ping interval — ping at 1/3 of keep-alive for reliability
+static MQTT_PING_INTERVAL_SECS: u64 = (MQTT_TIMEOUT_SECS as u64) / 3;
 
 /// Buffer time subtracted from rate limiting calculations
 const RATE_LIMIT_BUFFER_SECS: u64 = 4;
@@ -566,7 +568,7 @@ async fn handle_live_mqtt_updates<'a>(
     let mut rx_buffer = MQTT_TCP_RX_BUFFER.lock().await;
     let mut tx_buffer = MQTT_TCP_TX_BUFFER.lock().await;
     let mut socket = TcpSocket::new(stack.clone(), &mut *rx_buffer, &mut *tx_buffer);
-    socket.set_timeout(Some(Duration::from_secs(MQTT_TIMEOUT_SECS as u64)));
+    socket.set_timeout(Some(Duration::from_secs(MQTT_TIMEOUT_SECS as u64 + SOCKET_TIMEOUT_HEADROOM_SECS)));
 
     // Connect to MQTT broker
     log::info!("Connecting to MQTT broker...");
@@ -673,7 +675,11 @@ async fn handle_live_mqtt_updates<'a>(
     )
     .map_err(|_| "Failed to format ping topic")?;
 
-    let reserved_topics: [&str; 3] = [raw_topic.as_str(), config_topic.as_str(), ping_topic.as_str()];
+    let reserved_topics: [&str; 3] = [
+        raw_topic.as_str(),
+        config_topic.as_str(),
+        ping_topic.as_str(),
+    ];
 
     // Load saved dynamic topics from storage
     let mut dynamic_topics = load_mqtt_topics();
