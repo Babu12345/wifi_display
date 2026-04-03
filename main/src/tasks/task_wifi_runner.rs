@@ -92,15 +92,32 @@ Features:\n\
 Scan QR to start";
 
 /// Get started URL displayed as QR code when WiFi connects
-const GET_STARTED_URL: &str = "https://babu12345.github.io/portrait_v2_ios/get_started";
+const GET_STARTED_URL: &str = env!("GET_STARTED_URL");
 
 /// Support URL displayed as QR code when WiFi disconnects
-const SUPPORT_URL: &str = "https://babu12345.github.io/portrait_v2_ios/support";
+const SUPPORT_URL: &str = env!("SUPPORT_URL");
 
-const MQTT_BROKER_CSTR: &CStr = c"avbh2adibwzla-ats.iot.us-east-2.amazonaws.com";
-const MQTT_PORT: u16 = 8883; // TLS port
+const MQTT_BROKER: &str = env!("MQTT_BROKER");
+/// MQTT broker as a CStr for TLS servername (requires null terminator)
+const MQTT_BROKER_CSTR: &CStr = {
+    const BYTES: &[u8] = concat!(env!("MQTT_BROKER"), "\0").as_bytes();
+    match CStr::from_bytes_with_nul(BYTES) {
+        Ok(s) => s,
+        Err(_) => panic!("MQTT_BROKER contains interior null byte"),
+    }
+};
+const MQTT_PORT: u16 = {
+    let bytes = env!("MQTT_PORT").as_bytes();
+    let mut result: u16 = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        result = result * 10 + (bytes[i] - b'0') as u16;
+        i += 1;
+    }
+    result
+};
 /// Client ID and UUID for the device: Update this 6-character alphanumeric code for each board
-pub const MQTT_CLIENT_ID: &str = "000001";
+pub const MQTT_CLIENT_ID: &str = env!("MQTT_CLIENT_ID");
 /// Max size in bytes of the data being sent via AWS
 pub const MQTT_BUFFER_SIZE: usize = 7_000;
 /// Maximum number of dynamic topic subscriptions
@@ -550,12 +567,7 @@ async fn handle_live_mqtt_updates<'a>(
 
     // DNS lookup for MQTT broker
     let broker_ip = stack
-        .dns_query(
-            MQTT_BROKER_CSTR
-                .to_str()
-                .map_err(|_| "Unable to convert broker name to a string")?,
-            embassy_net::dns::DnsQueryType::A,
-        )
+        .dns_query(MQTT_BROKER, embassy_net::dns::DnsQueryType::A)
         .await
         .map_err(|_| "MQTT DNS lookup failed")?
         .first()
@@ -582,11 +594,31 @@ async fn handle_live_mqtt_updates<'a>(
 
     log::info!("Connected to MQTT broker, starting TLS handshake...");
 
-    // TLS certificates configuration
-    // Load certificates from src/certificates/ directory
-    const CA_CERT: &str = concat!(include_str!("../certificates/ca1.pem"), "\0");
-    const CLIENT_CERT: &str = concat!(include_str!("../certificates/cert.pem.crt"), "\0");
-    const PRIVATE_KEY: &str = concat!(include_str!("../certificates/private_key.pem.key"), "\0");
+    // TLS certificates configuration (paths relative to crate root, set in .env)
+    const CA_CERT: &str = concat!(
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/",
+            env!("CA_CERT_PATH")
+        )),
+        "\0"
+    );
+    const CLIENT_CERT: &str = concat!(
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/",
+            env!("CLIENT_CERT_PATH")
+        )),
+        "\0"
+    );
+    const PRIVATE_KEY: &str = concat!(
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/",
+            env!("PRIVATE_KEY_PATH")
+        )),
+        "\0"
+    );
 
     let certificates = Certificates {
         ca_chain: X509::pem(CA_CERT.as_bytes()).ok(),

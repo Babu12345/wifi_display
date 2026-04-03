@@ -73,3 +73,6 @@ esp-alloc = { git = "https://github.com/Babu12345/esp-hal", branch = "esp-wifi-0
 esp-config = { git = "https://github.com/Babu12345/esp-hal", branch = "esp-wifi-0.12.0-power-config" }
 esp-build = { git = "https://github.com/Babu12345/esp-hal", branch = "esp-wifi-0.12.0-power-config" }
 esp-metadata = { git = "https://github.com/Babu12345/esp-hal", branch = "esp-wifi-0.12.0-power-config" }
+
+[build-dependencies]
+dotenvy = "0.15"
