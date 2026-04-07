@@ -182,13 +182,29 @@ struct ProcessChunkResult {
 
 /// Display mode for the main task
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
 enum DisplayMode {
-    /// Display custom text from NFC (for low bandwidth)
-    CustomText,
-    /// Display QR code from URL via NFC (for low bandwidth)
-    QRCode,
     /// Live secure updates via MQTT
-    LiveUpdates,
+    LiveUpdates = 0x00,
+    /// Display custom text from NFC (for low bandwidth)
+    CustomText = 0x01,
+    /// Display QR code from URL via NFC (for low bandwidth)
+    QRCode = 0x02,
+}
+
+impl DisplayMode {
+    fn as_byte(self) -> u8 {
+        self as u8
+    }
+
+    fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0x00 => Some(DisplayMode::LiveUpdates),
+            0x01 => Some(DisplayMode::CustomText),
+            0x02 => Some(DisplayMode::QRCode),
+            _ => None,
+        }
+    }
 }
 
 /// MQTT response status
@@ -1417,27 +1433,17 @@ fn load_display_mode() -> DisplayMode {
     let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
 
     match storage.read(storage::storage::StorageContents::DisplayMode) {
-        Ok(data) => {
-            match data[0] {
-                0x00 => {
-                    log::info!("Loaded display mode: LiveUpdates");
-                    DisplayMode::LiveUpdates
-                }
-                0x01 => {
-                    log::info!("Loaded display mode: CustomText");
-                    DisplayMode::CustomText
-                }
-                0x02 => {
-                    log::info!("Loaded display mode: QRCode");
-                    DisplayMode::QRCode
-                }
-                _ => {
-                    // 0xFF (uninitialized) or invalid value
-                    log::info!("No saved display mode, defaulting to LiveUpdates");
-                    DisplayMode::LiveUpdates
-                }
+        Ok(data) => match DisplayMode::from_byte(data[0]) {
+            Some(mode) => {
+                log::info!("Loaded display mode: {:?}", mode);
+                mode
             }
-        }
+            None => {
+                // 0xFF (uninitialized) or invalid value
+                log::info!("No saved display mode, defaulting to LiveUpdates");
+                DisplayMode::LiveUpdates
+            }
+        },
         Err(e) => {
             log::error!("Failed to read display mode: {:?}", e);
             DisplayMode::LiveUpdates
@@ -1451,13 +1457,7 @@ fn set_display_mode(mode: DisplayMode) -> DisplayMode {
     let mut storage_buf = [0u8; 4];
     let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
 
-    let byte = match mode {
-        DisplayMode::LiveUpdates => 0x00,
-        DisplayMode::CustomText => 0x01,
-        DisplayMode::QRCode => 0x02,
-    };
-
-    match storage.write_bytes(storage::storage::StorageContents::DisplayMode, 0, &[byte]) {
+    match storage.write_bytes(storage::storage::StorageContents::DisplayMode, 0, &[mode.as_byte()]) {
         Ok(_) => log::info!("Saved display mode: {:?}", mode),
         Err(e) => log::error!("Failed to write display mode: {:?}", e),
     }
