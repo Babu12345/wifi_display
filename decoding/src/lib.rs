@@ -44,7 +44,7 @@ pub struct ChunkMetadata {
 }
 
 /// Config payload for subscribing to additional topics
-/// Expected format: {"subscribe": "topic", "unsubscribe": "topic", "unsubscribe_all": bool, "min_update_interval": u16, "max_cycles": u16, "requires_response": bool}
+/// Expected format: {"subscribe": "topic", "unsubscribe": "topic", "unsubscribe_all": bool, "min_update_interval": u32, "max_cycles": u16, "requires_response": bool}
 #[derive(Debug, Deserialize)]
 pub struct ConfigPayload<'a> {
     /// Topic to subscribe to (e.g., "mta/updates", "stocks/AAPL")
@@ -58,11 +58,12 @@ pub struct ConfigPayload<'a> {
     pub unsubscribe_all: bool,
     /// Minimum interval between display updates in seconds (0 = no limit)
     #[serde(default)]
-    pub min_update_interval: Option<u16>,
+    pub min_update_interval: Option<u32>,
     /// Maximum number of display update cycles before a full refresh
     #[serde(default)]
     pub max_cycles: Option<u8>,
     /// Whether the client requires a response
+    #[serde(default)]
     pub requires_response: bool,
 }
 

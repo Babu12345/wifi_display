@@ -741,7 +741,7 @@ async fn handle_live_mqtt_updates<'a>(
     let mut topics_changed = false;
 
     // Rate limiting for live updates - load saved value or default to 0
-    let mut min_update_interval_secs: u16 = load_min_update_interval().unwrap_or(0);
+    let mut min_update_interval_secs: u32 = load_min_update_interval().unwrap_or(0);
     // Track last update Unix timestamp (persisted to flash, survives reboots)
     let mut last_update_unix_ts: Option<u64> = load_last_update_timestamp();
     if let Some(ts) = last_update_unix_ts {
@@ -1226,7 +1226,7 @@ fn load_display_url(
 }
 
 /// Load min_update_interval setting from flash storage (stored as u32, 4 bytes)
-fn load_min_update_interval() -> Option<u16> {
+fn load_min_update_interval() -> Option<u32> {
     let mut storage_buf = [0u8; 16];
     let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
 
@@ -1242,7 +1242,7 @@ fn load_min_update_interval() -> Option<u16> {
                 "Loaded min_update_interval from storage: {} seconds",
                 interval
             );
-            Some(interval as u16)
+            Some(interval)
         }
         Err(e) => {
             log::error!("Failed to read min_update_interval: {:?}", e);
@@ -1355,11 +1355,11 @@ fn save_max_cycles(cycles: u8) {
 }
 
 /// Save min_update_interval setting to flash storage (stored as u32, 4 bytes)
-fn save_min_update_interval(interval: u16) {
+fn save_min_update_interval(interval: u32) {
     let mut storage_buf = [0u8; 16];
     let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
 
-    let bytes = (interval as u32).to_le_bytes();
+    let bytes = interval.to_le_bytes();
     match storage.write_bytes(
         storage::storage::StorageContents::MinUpdateInterval,
         0,
@@ -1457,7 +1457,11 @@ fn set_display_mode(mode: DisplayMode) -> DisplayMode {
     let mut storage_buf = [0u8; 4];
     let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
 
-    match storage.write_bytes(storage::storage::StorageContents::DisplayMode, 0, &[mode.as_byte()]) {
+    match storage.write_bytes(
+        storage::storage::StorageContents::DisplayMode,
+        0,
+        &[mode.as_byte()],
+    ) {
         Ok(_) => log::info!("Saved display mode: {:?}", mode),
         Err(e) => log::error!("Failed to write display mode: {:?}", e),
     }
