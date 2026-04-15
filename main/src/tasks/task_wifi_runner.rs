@@ -1168,6 +1168,12 @@ async fn handle_live_mqtt_updates<'a>(
                                 .ok();
                         }
 
+                        // Give AWS IoT a moment to retain the QoS 0 ACK before
+                        // we tear down the connection — otherwise the publish
+                        // and DISCONNECT race and the broker can drop the ACK,
+                        // leaving the Lambda waiting until it times out.
+                        Timer::after(Duration::from_millis(300)).await;
+
                         // Return to the outer loop. `client` (and its TLS session)
                         // gets dropped here, freeing ~30 KB of heap for the OTA
                         // TLS session that runs next.
