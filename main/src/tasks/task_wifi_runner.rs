@@ -101,10 +101,12 @@ const SUPPORT_URL: &str = env!("SUPPORT_URL");
 const OTA_UPDATING_MSG: &str = "Updating...\n\nDo not unplug.";
 
 /// Shown briefly after a successful OTA boot, before normal content resumes
-const OTA_COMPLETE_MSG: &str = "Update complete!";
+const OTA_COMPLETE_MSG: &str = "All set!\n\n\
+Your next display will appear soon, or open the app to refresh now.";
 
 /// Shown if the OTA download or verify fails before reboot
-const OTA_FAILED_MSG: &str = "Update failed.\n\nDevice is still working.";
+const OTA_FAILED_MSG: &str = "Update didn't finish.\n\n\
+Your device is fine. Your next display will appear soon, or open the app to refresh now.";
 
 const MQTT_BROKER: &str = env!("MQTT_BROKER");
 /// MQTT broker as a CStr for TLS servername (requires null terminator)
