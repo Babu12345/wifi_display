@@ -97,6 +97,15 @@ const GET_STARTED_URL: &str = env!("GET_STARTED_URL");
 /// Support URL displayed as QR code when WiFi disconnects
 const SUPPORT_URL: &str = env!("SUPPORT_URL");
 
+/// Shown while a firmware update is downloading
+const OTA_UPDATING_MSG: &str = "Updating...\n\nDo not unplug.";
+
+/// Shown briefly after a successful OTA boot, before normal content resumes
+const OTA_COMPLETE_MSG: &str = "Update complete!";
+
+/// Shown if the OTA download or verify fails before reboot
+const OTA_FAILED_MSG: &str = "Update failed.\n\nDevice is still working.";
+
 const MQTT_BROKER: &str = env!("MQTT_BROKER");
 /// MQTT broker as a CStr for TLS servername (requires null terminator)
 const MQTT_BROKER_CSTR: &CStr = {
@@ -554,10 +563,7 @@ async fn task_wifi_runner_inner(
                     // Show the user that something is happening — e-ink takes
                     // a few seconds to render and we're about to do a long
                     // download, so it'll be on screen well before reboot.
-                    queue_text_display(
-                        display_channel,
-                        "Updating firmware...\nThis will take 1 to 2 minutes.",
-                    );
+                    queue_text_display(display_channel, OTA_UPDATING_MSG);
 
                     let pending = PENDING_OTA.lock().await.take();
                     if let Some((buf, n)) = pending {
@@ -586,10 +592,7 @@ async fn task_wifi_runner_inner(
                             // Update the user before reboot. The message will
                             // persist on the e-ink until the old firmware
                             // reconnects and pushes new content.
-                            queue_text_display(
-                                display_channel,
-                                "Update failed.\nDevice continuing as normal.",
-                            );
+                            queue_text_display(display_channel, OTA_FAILED_MSG);
                             // Give the display task time to render the failure
                             // message before we reset and lose it.
                             Timer::after(Duration::from_secs(5)).await;
@@ -882,7 +885,7 @@ async fn handle_live_mqtt_updates<'a>(
         // Just rebooted from a successful OTA — let the user know. Whatever
         // normal content comes in next (bible verse, clock, etc.) will
         // replace this on the next refresh.
-        queue_text_display(display_channel, "Update complete!");
+        queue_text_display(display_channel, OTA_COMPLETE_MSG);
     }
 
     // Subscribe to saved dynamic topics
