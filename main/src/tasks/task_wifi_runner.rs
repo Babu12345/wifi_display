@@ -118,6 +118,10 @@ const MQTT_PORT: u16 = {
 };
 /// Client ID and UUID for the device: Update this 6-character alphanumeric code for each board
 pub const MQTT_CLIENT_ID: &str = env!("MQTT_CLIENT_ID");
+/// Broadcast OTA topic: every device subscribes here so one MQTT publish can
+/// hotfix the entire fleet. Not tied to any client ID. Uses the `public/*`
+/// namespace which is already covered by the existing AWS IoT policy.
+pub const OTA_BROADCAST_TOPIC: &str = "public/ota";
 /// Max size in bytes of the data being sent via AWS
 pub const MQTT_BUFFER_SIZE: usize = 7_000;
 /// Maximum number of dynamic topic subscriptions
@@ -777,11 +781,12 @@ async fn handle_live_mqtt_updates<'a>(
     core::fmt::write(&mut ota_topic, format_args!("{}/root/ota", MQTT_CLIENT_ID))
         .map_err(|_| "Failed to format ota topic")?;
 
-    let reserved_topics: [&str; 4] = [
+    let reserved_topics: [&str; 5] = [
         raw_topic.as_str(),
         config_topic.as_str(),
         ping_topic.as_str(),
         ota_topic.as_str(),
+        OTA_BROADCAST_TOPIC,
     ];
 
     // Load saved dynamic topics from storage
@@ -833,12 +838,21 @@ async fn handle_live_mqtt_updates<'a>(
         }
     }
 
-    // Subscribe to OTA topic (for firmware updates)
+    // Subscribe to OTA topic (for firmware updates, per-device)
     match client.subscribe_to_topic(ota_topic.as_str()).await {
         Ok(_) => log::info!("Subscribed to topic: {}", ota_topic.as_str()),
         Err(e) => {
             log::error!("MQTT OTA subscription error: {:?}", e);
             return Err("Failed to subscribe to OTA topic");
+        }
+    }
+
+    // Subscribe to broadcast OTA topic (fleet-wide hotfixes)
+    match client.subscribe_to_topic(OTA_BROADCAST_TOPIC).await {
+        Ok(_) => log::info!("Subscribed to topic: {}", OTA_BROADCAST_TOPIC),
+        Err(e) => {
+            log::error!("MQTT broadcast OTA subscription error: {:?}", e);
+            return Err("Failed to subscribe to broadcast OTA topic");
         }
     }
 
@@ -1125,8 +1139,8 @@ async fn handle_live_mqtt_updates<'a>(
                             log::info!("Ping response sent successfully");
                         }
                     }
-                    t if t == ota_topic.as_str() => {
-                        log::info!("OTA update triggered via MQTT");
+                    t if t == ota_topic.as_str() || t == OTA_BROADCAST_TOPIC => {
+                        log::info!("OTA update triggered via MQTT ({})", t);
 
                         // Copy payload off the client's receive buffer before any
                         // further use of `client` (payload borrows from it).
