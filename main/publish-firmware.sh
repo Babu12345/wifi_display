@@ -100,22 +100,27 @@ SIZE=$(stat -f%z "$OUT_BIN")
 CRC32=$(python3 -c "import binascii; print(binascii.crc32(open('${OUT_BIN}','rb').read()) & 0xFFFFFFFF)")
 
 URL="${FIRMWARE_BASE_URL}/${VERSION}/firmware.bin"
+TRIGGER_JSON="{\"url\":\"${URL}\",\"version\":\"${VERSION}\",\"size\":${SIZE},\"crc32\":${CRC32}}"
+
+# Write latest.json at the firmware-host root so the Lambda / server side
+# can publish the latest trigger without recomputing size+CRC.
+LATEST_JSON="${WEBSITE_FIRMWARE_DIR}/latest.json"
+echo "$TRIGGER_JSON" > "$LATEST_JSON"
 
 echo ""
 echo ">>> Published firmware v${VERSION}"
 echo "    Path:   ${OUT_BIN}"
+echo "    Latest: ${LATEST_JSON}"
 echo "    Size:   ${SIZE} bytes"
 echo "    CRC32:  ${CRC32}"
 echo "    Signed: $([[ $SECURE -eq 1 ]] && echo yes || echo no)"
 echo ""
 echo ">>> MQTT trigger payload (publish to {client_id}/root/ota):"
 echo ""
-cat <<EOF
-{"url":"${URL}","version":"${VERSION}","size":${SIZE},"crc32":${CRC32}}
-EOF
+echo "$TRIGGER_JSON"
 echo ""
 echo ">>> Next steps:"
 echo "    cd ${WEBSITE_FIRMWARE_DIR%/firmware}/.."
-echo "    git add docs/firmware/${VERSION}/"
+echo "    git add docs/firmware/${VERSION}/ docs/firmware/latest.json"
 echo "    git commit -m 'Publish firmware v${VERSION}'"
 echo "    git push"
