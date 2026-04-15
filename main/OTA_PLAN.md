@@ -243,9 +243,160 @@ Enable in esp-idf menuconfig when rebuilding the bootloader:
 
 ```toml
 # In main/Cargo.toml
-esp-hal-ota = { version = "0.4.6", features = ["esp32c3", "log"] }
-ota = { path = "../ota" }  # Hardware-agnostic OTA crate
+esp-hal-ota = { path = "../esp-hal-ota" }  # vendored, see note below
+ota = { path = "../ota" }                  # hardware-agnostic OTA crate
 ```
+
+---
+
+## Implementation Notes (actual delta from plan)
+
+The as-built system differs from the plan in a few places worth documenting.
+
+### Memory constraint: can't run two TLS sessions at once
+
+mbedtls statically allocates two 16 KB record buffers per session (`MBEDTLS_SSL_IN_CONTENT_LEN` / `OUT_CONTENT_LEN`). Two concurrent sessions (MQTT + OTA HTTPS) + WiFi's ~60 KB reservation + app state doesn't fit in the ESP32-C3's 400 KB SRAM. Handshake fails with `MBEDTLS_ERR_SSL_ALLOC_FAILED` (-32512).
+
+**Solution: optimistic ACK + drop MQTT before OTA.**
+
+1. OTA trigger arrives on MQTT
+2. Copy payload to a static buffer, send `{"response":"success"}` ACK immediately
+3. Return from the MQTT handler with a sentinel error → `client` drops → TLS heap freed
+4. Outer loop sees the signal, runs the OTA download in a clean context
+5. Reboot on success (new firmware) or failure (old firmware)
+
+Server infers final success from the device reconnecting with the new version — standard pattern in production OTA systems (Mender, SWUpdate, AWS Jobs).
+
+### Partition alignment gotcha
+
+`otadata` must be aligned to its own size (8 KB). Putting it at `0xF000` (4KB-aligned but not 8KB-aligned) makes espflash reject the table with "invalid". Fix: shrink `nvs` from `0x6000` to `0x5000` so `otadata` lands at `0xE000`.
+
+### StackResources bump
+
+Raised from `StackResources<3>` to `StackResources<5>` — DHCP + DNS + MQTT + OTA HTTPS needs at least 4 TCP sockets. Costs ~2 KB RAM.
+
+### Separate CA cert for firmware hosting
+
+MQTT uses AWS IoT's CA. Firmware is hosted on GitHub Pages which uses Let's Encrypt — different chain. Added `OTA_CA_CERT_PATH` in `.env` pointing to ISRG Root X1 (downloaded directly from letsencrypt.org since GitHub Pages doesn't send the root in its chain).
+
+### `esp-hal-ota` vendored locally
+
+Upstream v0.4.6 depends on `esp32c3` PAC v0.31.0, but our forked `esp-hal` uses PAC v0.27.0 → duplicate `DEVICE_PERIPHERALS` linker symbol. Vendored copy at `../esp-hal-ota/` changes one line (`esp32c3 = []` instead of `esp32c3 = ["dep:esp32c3"]`) since the crate doesn't actually use any PAC types.
+
+### Hardware-agnostic `ota` crate
+
+Protocol logic (trigger parsing, CRC verify, progress tracking, URL parsing, flash-write orchestration) lives in `../ota/` with mock traits for `FlashWriter` + `HttpClient`. 37 unit tests run on the host without any ESP32 hardware. ESP32-specific implementations live in `main/src/ota_flash.rs` and `main/src/ota_http.rs`.
+
+### Firmware publishing script
+
+`./main/publish-firmware.sh <version> [--secure]` automates the build → save-image → (optional sign) → CRC32 → copy-to-website pipeline and prints the MQTT trigger JSON ready to publish. Paths configured via `FIRMWARE_HOST_DIR` and `FIRMWARE_BASE_URL` in `.env`.
+
+---
+
+## Testing (dev mode)
+
+### One-time setup
+
+Ensure `.env` has these keys (see `.env.example`):
+
+```bash
+OTA_CA_CERT_PATH=src/certificates/ota_ca.pem
+FIRMWARE_HOST_DIR=/path/to/website/docs/firmware
+FIRMWARE_BASE_URL=https://<user>.github.io/<repo>/firmware
+```
+
+Add the OTA permissions to your AWS IoT policy (Subscribe + Receive on `*/root/ota`). After updating the policy, power-cycle the device so it reconnects with the new permissions.
+
+### Initial flash (once, via USB)
+
+```bash
+cd main
+cargo r   # builds and flashes with partitions.csv, opens monitor
+```
+
+Wait for the device to boot, connect to WiFi, and subscribe to MQTT topics.
+
+### Publish a new firmware version
+
+```bash
+cd main
+
+# Make a visible change first (e.g., bump ESP_APP_DESC version or add a log line)
+
+# Build, package, and copy to website:
+./publish-firmware.sh 1.0.1            # dev mode (default)
+# or
+./publish-firmware.sh 1.0.1 --secure   # secure boot signed
+
+# Commit + push the binary (the script prints these commands):
+cd "$FIRMWARE_HOST_DIR/../.."
+git add docs/firmware/1.0.1/
+git commit -m "Publish firmware v1.0.1"
+git push
+
+# Wait ~1 min for GitHub Pages to deploy, verify:
+curl -I https://<user>.github.io/<repo>/firmware/1.0.1/firmware.bin
+# → HTTP/2 200
+```
+
+### Trigger the OTA
+
+Copy the JSON printed by `publish-firmware.sh` and publish it via AWS IoT MQTT test client:
+
+- **Topic:** `{client_id}/root/ota` — **no leading slash**
+- **Payload:** `{"url":"...","version":"1.0.1","size":...,"crc32":...}`
+
+### What you should see on serial monitor
+
+```
+Received MQTT message on topic: {client_id}/root/ota
+OTA update triggered via MQTT
+OTA requested, running download after MQTT teardown
+OTA: downloading version=1.0.1 size=... from https://...
+OTA: resolved <host> to <ip>
+OTA: TCP connected to <host>:443
+OTA: TLS connected
+OTA: GET request sent
+OTA: HTTP 200 OK, starting download
+OTA: 25% ...
+OTA: 50% ...
+OTA: 100% ...
+OTA: firmware verified and boot target set
+OTA success, rebooting into new firmware
+<reboot>
+<new version boots, reconnects to MQTT>
+```
+
+### Rollback test (optional)
+
+Publish a v1.0.2 that panics at boot. Trigger OTA. After reboot, the new firmware will fail to `mark_valid()`. On next boot the bootloader rolls back to v1.0.1 automatically.
+
+---
+
+## Gotcha: USB reflash doesn't reset which partition boots
+
+`cargo r` (espflash) writes firmware to `ota_0`, but **does not touch `otadata`**. If a previous OTA set `otadata` to point at `ota_1`, the device will keep booting from the stale `ota_1` binary even after you USB-flash a fresh one to `ota_0`.
+
+Symptoms: you flash what should be "new" code, but the device behaves like it's running an old version (missing log lines you just added, old bugs coming back, etc.).
+
+**Fix — erase the OTA selector before reflashing:**
+
+```bash
+cd main
+
+# Nuke otadata only — blank otadata = boot from ota_0
+espflash erase-parts --partition-table partitions.csv otadata
+
+# Or for a fully clean slate:
+espflash erase-flash
+
+# Then reflash normally
+cargo r
+```
+
+**When you'll hit this:** most often during OTA development when you've published a buggy firmware, it OTA'd successfully, and now the device is stuck running the buggy version. Since the buggy version may not be able to OTA itself to a fix (chicken-and-egg), USB recovery is the escape hatch — but you must erase `otadata` first.
+
+**Also remember:** after recovering via USB, re-publish the fixed firmware to the website so future OTAs install the fixed code, not the buggy one that's still sitting at the hosted URL.
 
 ---
 
