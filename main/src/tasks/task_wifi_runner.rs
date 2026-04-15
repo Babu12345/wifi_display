@@ -550,6 +550,15 @@ async fn task_wifi_runner_inner(
                 }
                 Err(e) if e == OTA_REQUESTED_SIGNAL => {
                     log::info!("OTA requested, running download after MQTT teardown");
+
+                    // Show the user that something is happening — e-ink takes
+                    // a few seconds to render and we're about to do a long
+                    // download, so it'll be on screen well before reboot.
+                    queue_text_display(
+                        display_channel,
+                        "Updating firmware...\nThis will take 1 to 2 minutes.",
+                    );
+
                     let pending = PENDING_OTA.lock().await.take();
                     if let Some((buf, n)) = pending {
                         let ok = match crate::ota_flash::EspFlashWriter::new() {
@@ -574,6 +583,16 @@ async fn task_wifi_runner_inner(
                             log::info!("OTA success, rebooting into new firmware");
                         } else {
                             log::error!("OTA failed, rebooting into old firmware");
+                            // Update the user before reboot. The message will
+                            // persist on the e-ink until the old firmware
+                            // reconnects and pushes new content.
+                            queue_text_display(
+                                display_channel,
+                                "Update failed.\nDevice continuing as normal.",
+                            );
+                            // Give the display task time to render the failure
+                            // message before we reset and lose it.
+                            Timer::after(Duration::from_secs(5)).await;
                         }
                         esp_hal::reset::software_reset();
                     }
@@ -859,7 +878,12 @@ async fn handle_live_mqtt_updates<'a>(
     // Mark the running app valid now that we've proven the full OTA path
     // works. If any earlier step failed this is skipped, and the bootloader
     // rolls back on the next reset.
-    confirm_ota_boot();
+    if confirm_ota_boot() {
+        // Just rebooted from a successful OTA — let the user know. Whatever
+        // normal content comes in next (bible verse, clock, etc.) will
+        // replace this on the next refresh.
+        queue_text_display(display_channel, "Update complete!");
+    }
 
     // Subscribe to saved dynamic topics
     for topic in dynamic_topics.iter() {
@@ -1291,17 +1315,29 @@ async fn handle_live_mqtt_updates<'a>(
 /// Called only after WiFi + MQTT + OTA-topic subscription have all succeeded,
 /// so it acts as a "full OTA path verified" gate. If any prerequisite fails,
 /// this is skipped and the bootloader rolls back on the next reset.
-fn confirm_ota_boot() {
+///
+/// Returns `true` if this was a fresh OTA boot (caller can show a "complete"
+/// message), `false` otherwise.
+fn confirm_ota_boot() -> bool {
     match crate::ota_flash::EspFlashWriter::new() {
         Ok(flash) => {
             let mut mgr = ota::OtaManager::new(flash);
             match mgr.confirm_boot_if_needed() {
-                Ok(true) => log::info!("OTA firmware validated on first boot"),
-                Ok(false) => {} // not an OTA boot, nothing to do
-                Err(e) => log::error!("OTA boot validation failed: {:?}", e),
+                Ok(true) => {
+                    log::info!("OTA firmware validated on first boot");
+                    true
+                }
+                Ok(false) => false, // not an OTA boot, nothing to do
+                Err(e) => {
+                    log::error!("OTA boot validation failed: {:?}", e);
+                    false
+                }
             }
         }
-        Err(e) => log::warn!("Could not check OTA boot status: {:?}", e),
+        Err(e) => {
+            log::warn!("Could not check OTA boot status: {:?}", e);
+            false
+        }
     }
 }
 
