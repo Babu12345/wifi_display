@@ -156,6 +156,22 @@ All configuration and content is stored in non-volatile flash storage:
 3. WiFi will connect (if not already connected) and establish MQTT connection
 4. Device will start receiving real-time updates from the MQTT broker
 
+## OTA Firmware Updates
+
+The device supports over-the-air firmware updates triggered via MQTT. See [main/OTA_PLAN.md](main/OTA_PLAN.md) for the full design.
+
+### Publishing a new firmware version
+
+```bash
+cd main
+./publish-firmware.sh 1.0.0            # dev mode (default)
+./publish-firmware.sh 1.0.0 --secure   # sign with secure boot V2 key
+```
+
+The script builds the release image, packages it as a flashable binary, computes the CRC32 and size, copies it into the website firmware directory (configured in `.env`), and prints the MQTT trigger JSON to publish to `{client_id}/root/ota`.
+
+Requires `FIRMWARE_HOST_DIR` and `FIRMWARE_BASE_URL` set in `main/.env` (see `main/.env.example`).
+
 ## Authors
 Babuabel Wanyeki (babs@wanyekitech.com)
 

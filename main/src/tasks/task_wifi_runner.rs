@@ -747,20 +747,6 @@ async fn handle_live_mqtt_updates<'a>(
         }
     }
 
-    // If we just booted from a new OTA partition, confirm it's valid
-    // now that WiFi + MQTT connection succeeded
-    match crate::ota_flash::EspFlashWriter::new() {
-        Ok(flash) => {
-            let mut mgr = ota::OtaManager::new(flash);
-            match mgr.confirm_boot_if_needed() {
-                Ok(true) => log::info!("OTA firmware validated on first boot"),
-                Ok(false) => {} // not an OTA boot, nothing to do
-                Err(e) => log::error!("OTA boot validation failed: {:?}", e),
-            }
-        }
-        Err(e) => log::warn!("Could not check OTA boot status: {:?}", e),
-    }
-
     // Construct topic paths using client ID
     let mut raw_topic = String::<64>::new();
     core::fmt::write(&mut raw_topic, format_args!("{}/root/raw", MQTT_CLIENT_ID))
@@ -788,11 +774,8 @@ async fn handle_live_mqtt_updates<'a>(
     .map_err(|_| "Failed to format ping topic")?;
 
     let mut ota_topic = String::<64>::new();
-    core::fmt::write(
-        &mut ota_topic,
-        format_args!("{}/root/ota", MQTT_CLIENT_ID),
-    )
-    .map_err(|_| "Failed to format ota topic")?;
+    core::fmt::write(&mut ota_topic, format_args!("{}/root/ota", MQTT_CLIENT_ID))
+        .map_err(|_| "Failed to format ota topic")?;
 
     let reserved_topics: [&str; 4] = [
         raw_topic.as_str(),
@@ -858,6 +841,11 @@ async fn handle_live_mqtt_updates<'a>(
             return Err("Failed to subscribe to OTA topic");
         }
     }
+
+    // Mark the running app valid now that we've proven the full OTA path
+    // works. If any earlier step failed this is skipped, and the bootloader
+    // rolls back on the next reset.
+    confirm_ota_boot();
 
     // Subscribe to saved dynamic topics
     for topic in dynamic_topics.iter() {
@@ -1154,9 +1142,7 @@ async fn handle_live_mqtt_updates<'a>(
                             response: MqttResponseStatus::Success,
                         };
                         let mut response_buf = [0u8; 64];
-                        if let Ok(len) =
-                            serde_json_core::to_slice(&response, &mut response_buf)
-                        {
+                        if let Ok(len) = serde_json_core::to_slice(&response, &mut response_buf) {
                             client
                                 .send_message(
                                     response_topic.as_str(),
@@ -1277,6 +1263,25 @@ async fn handle_live_mqtt_updates<'a>(
                 }
             }
         }
+    }
+}
+
+/// Mark the running app as valid if we just booted from a new OTA partition.
+///
+/// Called only after WiFi + MQTT + OTA-topic subscription have all succeeded,
+/// so it acts as a "full OTA path verified" gate. If any prerequisite fails,
+/// this is skipped and the bootloader rolls back on the next reset.
+fn confirm_ota_boot() {
+    match crate::ota_flash::EspFlashWriter::new() {
+        Ok(flash) => {
+            let mut mgr = ota::OtaManager::new(flash);
+            match mgr.confirm_boot_if_needed() {
+                Ok(true) => log::info!("OTA firmware validated on first boot"),
+                Ok(false) => {} // not an OTA boot, nothing to do
+                Err(e) => log::error!("OTA boot validation failed: {:?}", e),
+            }
+        }
+        Err(e) => log::warn!("Could not check OTA boot status: {:?}", e),
     }
 }
 
