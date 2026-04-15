@@ -137,6 +137,24 @@ static MQTT_TCP_TX_BUFFER: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]
 
 static CHUNK_META: Mutex<CriticalSectionRawMutex, ChunkMeta> = Mutex::new(ChunkMeta::new());
 
+/// Pending OTA trigger payload, set by the MQTT handler and picked up by the
+/// outer loop after the MQTT session is torn down (freeing TLS heap).
+static PENDING_OTA: Mutex<CriticalSectionRawMutex, Option<([u8; 512], usize)>> = Mutex::new(None);
+
+/// Sentinel error returned from the MQTT handler when an OTA trigger arrives,
+/// used by the outer loop to run the OTA download in a clean context.
+const OTA_REQUESTED_SIGNAL: &str = "__ota_requested__";
+
+/// CA cert for OTA firmware downloads (ISRG Root X1 for GitHub Pages)
+const OTA_CA_CERT: &str = concat!(
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/",
+        env!("OTA_CA_CERT_PATH")
+    )),
+    "\0"
+);
+
 /// Static decode buffer to avoid stack allocation on each chunk
 static DECODE_BUF: Mutex<CriticalSectionRawMutex, [u8; MQTT_BUFFER_SIZE]> =
     Mutex::new([0u8; MQTT_BUFFER_SIZE]);
@@ -526,6 +544,36 @@ async fn task_wifi_runner_inner(
                         }
                     }
                 }
+                Err(e) if e == OTA_REQUESTED_SIGNAL => {
+                    log::info!("OTA requested, running download after MQTT teardown");
+                    let pending = PENDING_OTA.lock().await.take();
+                    if let Some((buf, n)) = pending {
+                        let ok = match crate::ota_flash::EspFlashWriter::new() {
+                            Ok(flash) => {
+                                let mut mgr = ota::OtaManager::new(flash);
+                                crate::ota_http::download_and_flash(
+                                    &stack,
+                                    &tls,
+                                    OTA_CA_CERT.as_bytes(),
+                                    &mut mgr,
+                                    &buf[..n],
+                                )
+                                .await
+                                .is_ok()
+                            }
+                            Err(e) => {
+                                log::error!("Failed to init OTA flash: {:?}", e);
+                                false
+                            }
+                        };
+                        if ok {
+                            log::info!("OTA success, rebooting into new firmware");
+                        } else {
+                            log::error!("OTA failed, rebooting into old firmware");
+                        }
+                        esp_hal::reset::software_reset();
+                    }
+                }
                 Err(e) => {
                     log::error!("MQTT error: {}", e);
                 }
@@ -680,8 +728,8 @@ async fn handle_live_mqtt_updates<'a>(
     let mut recv_buffer = [0u8; MQTT_BUFFER_SIZE];
     let mut write_buffer = [0u8; MQTT_BUFFER_SIZE];
 
-    // 3 reserved topics (raw, config, ping) + MAX_DYNAMIC_TOPICS (4) = 7
-    let mut client = MqttClient::<_, 7, _>::new(
+    // 4 reserved topics (raw, config, ping, ota) + MAX_DYNAMIC_TOPICS (4) = 8
+    let mut client = MqttClient::<_, 8, _>::new(
         session,
         &mut write_buffer,
         MQTT_BUFFER_SIZE,
@@ -697,6 +745,20 @@ async fn handle_live_mqtt_updates<'a>(
             log::error!("MQTT connection error: {:?}", e);
             return Err("Failed to connect to MQTT broker");
         }
+    }
+
+    // If we just booted from a new OTA partition, confirm it's valid
+    // now that WiFi + MQTT connection succeeded
+    match crate::ota_flash::EspFlashWriter::new() {
+        Ok(flash) => {
+            let mut mgr = ota::OtaManager::new(flash);
+            match mgr.confirm_boot_if_needed() {
+                Ok(true) => log::info!("OTA firmware validated on first boot"),
+                Ok(false) => {} // not an OTA boot, nothing to do
+                Err(e) => log::error!("OTA boot validation failed: {:?}", e),
+            }
+        }
+        Err(e) => log::warn!("Could not check OTA boot status: {:?}", e),
     }
 
     // Construct topic paths using client ID
@@ -725,10 +787,18 @@ async fn handle_live_mqtt_updates<'a>(
     )
     .map_err(|_| "Failed to format ping topic")?;
 
-    let reserved_topics: [&str; 3] = [
+    let mut ota_topic = String::<64>::new();
+    core::fmt::write(
+        &mut ota_topic,
+        format_args!("{}/root/ota", MQTT_CLIENT_ID),
+    )
+    .map_err(|_| "Failed to format ota topic")?;
+
+    let reserved_topics: [&str; 4] = [
         raw_topic.as_str(),
         config_topic.as_str(),
         ping_topic.as_str(),
+        ota_topic.as_str(),
     ];
 
     // Load saved dynamic topics from storage
@@ -777,6 +847,15 @@ async fn handle_live_mqtt_updates<'a>(
         Err(e) => {
             log::error!("MQTT ping subscription error: {:?}", e);
             return Err("Failed to subscribe to ping topic");
+        }
+    }
+
+    // Subscribe to OTA topic (for firmware updates)
+    match client.subscribe_to_topic(ota_topic.as_str()).await {
+        Ok(_) => log::info!("Subscribed to topic: {}", ota_topic.as_str()),
+        Err(e) => {
+            log::error!("MQTT OTA subscription error: {:?}", e);
+            return Err("Failed to subscribe to OTA topic");
         }
     }
 
@@ -1057,6 +1136,43 @@ async fn handle_live_mqtt_updates<'a>(
                         } else {
                             log::info!("Ping response sent successfully");
                         }
+                    }
+                    t if t == ota_topic.as_str() => {
+                        log::info!("OTA update triggered via MQTT");
+
+                        // Copy payload off the client's receive buffer before any
+                        // further use of `client` (payload borrows from it).
+                        let mut buf = [0u8; 512];
+                        let n = payload.len().min(buf.len());
+                        buf[..n].copy_from_slice(&payload[..n]);
+                        *PENDING_OTA.lock().await = Some((buf, n));
+
+                        // Send optimistic ACK before tearing down the MQTT session.
+                        // Server treats this as "accepted"; final success is inferred
+                        // from the device reconnecting with the new version after reboot.
+                        let response = MqttResponse {
+                            response: MqttResponseStatus::Success,
+                        };
+                        let mut response_buf = [0u8; 64];
+                        if let Ok(len) =
+                            serde_json_core::to_slice(&response, &mut response_buf)
+                        {
+                            client
+                                .send_message(
+                                    response_topic.as_str(),
+                                    &response_buf[..len],
+                                    DEFAULT_QOS,
+                                    true,
+                                )
+                                .await
+                                .ok();
+                        }
+
+                        // Return to the outer loop. `client` (and its TLS session)
+                        // gets dropped here, freeing ~30 KB of heap for the OTA
+                        // TLS session that runs next.
+                        client.disconnect().await.ok();
+                        return Err(OTA_REQUESTED_SIGNAL);
                     }
                     t if dynamic_topics.iter().any(|dt| dt.as_str() == t) => {
                         // Handle messages from dynamically subscribed topics (live updates)

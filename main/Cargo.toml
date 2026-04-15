@@ -12,6 +12,7 @@ production = []
 
 # Internal
 decoding = { path = "../decoding" }
+ota = { path = "../ota" }
 
 # External
 embassy-sync = "0.7.2"
@@ -37,6 +38,7 @@ embassy-time = { version = "^0.4", features = ["generic-queue-8"] }
 esp-hal-embassy = { version = "^0.6.0", features = ["esp32c3"] }
 static_cell = { version = "2.1.0" }
 esp-storage = { version = "0.4.0", features = ["esp32c3"] }
+esp-hal-ota = { path = "../esp-hal-ota", features = ["esp32c3", "log"] }
 
 esp-wifi = { version = "0.12.0", default-features = false, features = [
     "esp32c3",

@@ -9,7 +9,7 @@ use serde::Deserialize;
 ///
 /// Example payload:
 /// ```json
-/// {"url": "https://fw.example.com/v1.2.0/firmware.bin", "version": "1.2.0", "size": 1258000}
+/// {"url": "https://fw.example.com/v1.2.0/firmware.bin", "version": "1.2.0", "size": 1258000, "crc32": 2820145897}
 /// ```
 #[derive(Deserialize, Debug, Clone)]
 pub struct OtaTrigger<'a> {
@@ -21,6 +21,8 @@ pub struct OtaTrigger<'a> {
     pub version: &'a str,
     /// Expected firmware size in bytes
     pub size: u32,
+    /// CRC32 checksum of the firmware binary for integrity verification
+    pub crc32: u32,
 }
 
 /// OTA completion status
@@ -102,31 +104,33 @@ mod tests {
 
     #[test]
     fn test_parse_trigger_valid() {
-        let json = br#"{"url":"https://fw.example.com/v1.2.0/firmware.bin","version":"1.2.0","size":1258000}"#;
+        let json = br#"{"url":"https://fw.example.com/v1.2.0/firmware.bin","version":"1.2.0","size":1258000,"crc32":2820145897}"#;
         let trigger = parse_trigger(json).unwrap();
         assert_eq!(trigger.url, "https://fw.example.com/v1.2.0/firmware.bin");
         assert_eq!(trigger.version, "1.2.0");
         assert_eq!(trigger.size, 1258000);
+        assert_eq!(trigger.crc32, 2820145897);
     }
 
     #[test]
     fn test_parse_trigger_null_terminated() {
-        let json = *b"{\"url\":\"https://example.com/fw.bin\",\"version\":\"0.1\",\"size\":100}\0\0\0";
+        let json = *b"{\"url\":\"https://example.com/fw.bin\",\"version\":\"0.1\",\"size\":100,\"crc32\":999}\0\0\0";
         let trigger = parse_trigger(&json).unwrap();
         assert_eq!(trigger.url, "https://example.com/fw.bin");
         assert_eq!(trigger.size, 100);
+        assert_eq!(trigger.crc32, 999);
     }
 
     #[test]
     fn test_parse_trigger_empty_url() {
-        let json = br#"{"url":"","version":"1.0","size":100}"#;
+        let json = br#"{"url":"","version":"1.0","size":100,"crc32":0}"#;
         let result = parse_trigger(json);
         assert_eq!(result.unwrap_err(), "OTA trigger URL is empty");
     }
 
     #[test]
     fn test_parse_trigger_zero_size() {
-        let json = br#"{"url":"https://example.com/fw.bin","version":"1.0","size":0}"#;
+        let json = br#"{"url":"https://example.com/fw.bin","version":"1.0","size":0,"crc32":0}"#;
         let result = parse_trigger(json);
         assert_eq!(result.unwrap_err(), "OTA trigger size is zero");
     }
@@ -139,7 +143,8 @@ mod tests {
 
     #[test]
     fn test_parse_trigger_missing_field() {
-        let json = br#"{"url":"https://example.com/fw.bin","version":"1.0"}"#;
+        // Missing crc32
+        let json = br#"{"url":"https://example.com/fw.bin","version":"1.0","size":100}"#;
         assert!(parse_trigger(json).is_err());
     }
 

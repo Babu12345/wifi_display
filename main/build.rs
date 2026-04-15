@@ -28,6 +28,7 @@ fn main() {
         "CA_CERT_PATH",
         "CLIENT_CERT_PATH",
         "PRIVATE_KEY_PATH",
+        "OTA_CA_CERT_PATH",
     ];
     for key in required {
         if !env_vars.contains_key(key) {
@@ -37,7 +38,7 @@ fn main() {
 
     // Validate certificate file paths exist
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    for key in ["CA_CERT_PATH", "CLIENT_CERT_PATH", "PRIVATE_KEY_PATH"] {
+    for key in ["CA_CERT_PATH", "CLIENT_CERT_PATH", "PRIVATE_KEY_PATH", "OTA_CA_CERT_PATH"] {
         let rel_path = &env_vars[key];
         let full_path = format!("{}/{}", manifest_dir, rel_path);
         if !std::path::Path::new(&full_path).exists() {

@@ -3,6 +3,8 @@
 #![no_std]
 #![deny(missing_docs)]
 
+pub mod ota_flash;
+pub mod ota_http;
 pub mod spi;
 pub mod tasks;
 

@@ -1,7 +1,10 @@
-# ESP32-C3 Partition Table for Secure Boot V2
+# ESP32-C3 Partition Table for Secure Boot V2 with OTA
 # Partition table offset: 0x10000 (configured in menuconfig)
 # App starts at 0x20000 to accommodate secure bootloader
+# User data storage starts at 0x310000 — do not overlap
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,     0x11000,  0x6000,
 phy_init, data, phy,     0x17000,  0x1000,
-factory,  app,  factory, 0x20000,  0x2F0000,
+otadata,  data, ota,     0x18000,  0x2000,
+ota_0,    app,  ota_0,   0x20000,  0x178000,
+ota_1,    app,  ota_1,   0x198000, 0x178000,

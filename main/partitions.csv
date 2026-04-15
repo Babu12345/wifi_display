@@ -1,5 +1,9 @@
-# ESP32-C3 Partition Table for Development (espflash default bootloader)
+# ESP32-C3 Partition Table for Development (espflash default bootloader) with OTA
 # For Secure Boot, use partitions_secure.csv with esp-idf bootloader
-# Name,   Type, SubType, Offset,  Size, Flags
-nvs,      data, nvs,     0x9000,  0x6000,
-factory,  app,  factory, 0x10000, 0x300000,
+# User data storage starts at 0x310000 — do not overlap
+# otadata must be 8KB-aligned (its own size)
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xE000,   0x2000,
+ota_0,    app,  ota_0,   0x10000,  0x180000,
+ota_1,    app,  ota_1,   0x190000, 0x180000,

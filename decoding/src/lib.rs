@@ -331,10 +331,11 @@ mod tests {
 
     #[test]
     fn test_parse_config_missing_required_fields() {
-        // Missing requires_response
+        // requires_response defaults to false when missing
         let json = br#"{"subscribe":"mta/updates"}"#;
-        let result = parse_config(json);
-        assert!(result.is_err());
+        let config = parse_config(json).unwrap();
+        assert_eq!(config.subscribe, Some("mta/updates"));
+        assert_eq!(config.requires_response, false);
     }
 
     #[test]

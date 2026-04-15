@@ -109,13 +109,15 @@ Update the static topic count from 7 to 8 (4 reserved + 4 dynamic) in `MqttClien
 {
   "url": "https://fw.example.com/v1.2.0/firmware-signed.bin",
   "version": "1.2.0",
-  "size": 1258000
+  "size": 1258000,
+  "crc32": 2820145897
 }
 ```
 
 - `url`: HTTPS endpoint hosting the signed firmware binary (e.g., S3 presigned URL)
 - `version`: Human-readable version string (for logging/ACK)
 - `size`: Expected size in bytes (for validation before finalizing)
+- `crc32`: CRC32 checksum of the firmware binary (verified after flash write)
 
 ---
 
@@ -241,7 +243,8 @@ Enable in esp-idf menuconfig when rebuilding the bootloader:
 
 ```toml
 # In main/Cargo.toml
-esp-ota = { version = "0.3", features = ["esp32c3"] }  # Check for latest version
+esp-hal-ota = { version = "0.4.6", features = ["esp32c3", "log"] }
+ota = { path = "../ota" }  # Hardware-agnostic OTA crate
 ```
 
 ---
