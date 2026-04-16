@@ -24,7 +24,6 @@ fn main() {
         "SUPPORT_URL",
         "MQTT_BROKER",
         "MQTT_PORT",
-        "MQTT_CLIENT_ID",
         "CA_CERT_PATH",
         "CLIENT_CERT_PATH",
         "PRIVATE_KEY_PATH",

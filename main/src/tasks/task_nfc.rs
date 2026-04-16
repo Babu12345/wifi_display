@@ -1,7 +1,6 @@
 //! NFC tag monitoring and data processing
 
 use crate::NotificationType;
-use crate::tasks::task_wifi_runner::MQTT_CLIENT_ID;
 use crate::tasks::{format_registration_response, is_registration_response};
 use crate::{NUM_NFC_CHANGE_RECEIVERS, NUM_NOTIFICATION_RECEIVERS};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, watch::Sender};
@@ -28,6 +27,7 @@ pub async fn task_nfc(
     mut nfc: Nfc<STM25DV64KC, Input<'static>, Output<'static>, I2c<'static, Async>>,
     notification: Sender<'static, NoopRawMutex, NotificationType, NUM_NOTIFICATION_RECEIVERS>,
     nfc_change: Sender<'static, NoopRawMutex, u32, NUM_NFC_CHANGE_RECEIVERS>,
+    client_id: &'static str,
 ) {
     // Initialize the NFC tag (formats NDEF and enables RF write access)
     log::info!("Initializing NFC tag...");
@@ -60,7 +60,7 @@ pub async fn task_nfc(
                     }
                     // Write registration code in a structured format for easy parsing
                     match nfc
-                        .write_text(&format_registration_response(MQTT_CLIENT_ID))
+                        .write_text(&format_registration_response(client_id))
                         .await
                     {
                         Ok(_) => log::info!("✓ Device registration response written"),

@@ -42,6 +42,20 @@ pub fn initialize_peripherals() -> Peripherals {
     peripherals
 }
 
+/// Read the chip's unique 48-bit eFuse MAC and format it as a 12-character
+/// uppercase hex string (e.g. `"80F1B2ECB820"`). Used as the MQTT client ID
+/// and registration code so every device is identifiable without any
+/// per-device provisioning and OTA can ship one binary to the whole fleet.
+pub fn device_client_id() -> heapless::String<12> {
+    use core::fmt::Write;
+    let mac = esp_hal::efuse::Efuse::read_base_mac_address();
+    let mut s = heapless::String::<12>::new();
+    for byte in &mac {
+        let _ = write!(&mut s, "{:02X}", byte);
+    }
+    s
+}
+
 /// Extra functions (mainly async) for the stack
 pub trait AsyncStack {
     /// Waiting for an uplink

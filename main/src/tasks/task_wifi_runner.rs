@@ -127,8 +127,9 @@ const MQTT_PORT: u16 = {
     }
     result
 };
-/// Client ID and UUID for the device: Update this 6-character alphanumeric code for each board
-pub const MQTT_CLIENT_ID: &str = env!("MQTT_CLIENT_ID");
+// MQTT client ID is derived from the chip's eFuse MAC at runtime (see
+// `crate::device_client_id`) so every device is unique without per-device
+// provisioning and a single OTA binary can serve the whole fleet.
 /// Broadcast OTA topic: every device subscribes here so one MQTT publish can
 /// hotfix the entire fleet. Not tied to any client ID. Uses the `public/*`
 /// namespace which is already covered by the existing AWS IoT policy.
@@ -291,6 +292,7 @@ pub async fn task_wifi_runner(
     display_channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     sha: peripherals::SHA,
     rsa: peripherals::RSA,
+    client_id: &'static str,
 ) {
     // Spawn the network runner as a background future using join
     embassy_futures::join::join(
@@ -304,6 +306,7 @@ pub async fn task_wifi_runner(
             display_channel,
             sha,
             rsa,
+            client_id,
         ),
     )
     .await;
@@ -318,6 +321,7 @@ async fn task_wifi_runner_inner(
     display_channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     sha: peripherals::SHA,
     rsa: peripherals::RSA,
+    client_id: &str,
 ) {
     let tls = esp_mbedtls::Tls::new(sha).unwrap().with_hardware_rsa(rsa);
 
@@ -537,6 +541,7 @@ async fn task_wifi_runner_inner(
                 &mut notification,
                 display_channel,
                 &tls,
+                client_id,
             )
             .await
             {
@@ -642,6 +647,7 @@ async fn handle_live_mqtt_updates<'a>(
     >,
     display_channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     tls: &'a esp_mbedtls::Tls<'a>,
+    client_id: &str,
 ) -> Result<NotificationType, &'static str> {
     use embassy_net::tcp::TcpSocket;
     use esp_mbedtls::{Certificates, Mode, TlsVersion, X509, asynch::Session};
@@ -748,7 +754,7 @@ async fn handle_live_mqtt_updates<'a>(
         rust_mqtt::client::client_config::MqttVersion::MQTTv5,
         &mut rng,
     );
-    config.add_client_id(MQTT_CLIENT_ID);
+    config.add_client_id(client_id);
     config.max_packet_size = MQTT_BUFFER_SIZE as u32;
     config.keep_alive = MQTT_TIMEOUT_SECS;
 
@@ -777,32 +783,32 @@ async fn handle_live_mqtt_updates<'a>(
 
     // Construct topic paths using client ID
     let mut raw_topic = String::<64>::new();
-    core::fmt::write(&mut raw_topic, format_args!("{}/root/raw", MQTT_CLIENT_ID))
+    core::fmt::write(&mut raw_topic, format_args!("{}/root/raw", client_id))
         .map_err(|_| "Failed to format raw topic")?;
 
     let mut config_topic = String::<64>::new();
     core::fmt::write(
         &mut config_topic,
-        format_args!("{}/root/config", MQTT_CLIENT_ID),
+        format_args!("{}/root/config", client_id),
     )
     .map_err(|_| "Failed to format config topic")?;
 
     let mut response_topic = String::<64>::new();
     core::fmt::write(
         &mut response_topic,
-        format_args!("{}/root/response", MQTT_CLIENT_ID),
+        format_args!("{}/root/response", client_id),
     )
     .map_err(|_| "Failed to format response topic")?;
 
     let mut ping_topic = String::<64>::new();
     core::fmt::write(
         &mut ping_topic,
-        format_args!("{}/root/ping", MQTT_CLIENT_ID),
+        format_args!("{}/root/ping", client_id),
     )
     .map_err(|_| "Failed to format ping topic")?;
 
     let mut ota_topic = String::<64>::new();
-    core::fmt::write(&mut ota_topic, format_args!("{}/root/ota", MQTT_CLIENT_ID))
+    core::fmt::write(&mut ota_topic, format_args!("{}/root/ota", client_id))
         .map_err(|_| "Failed to format ota topic")?;
 
     let reserved_topics: [&str; 5] = [

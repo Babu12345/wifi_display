@@ -73,7 +73,7 @@ use main::tasks::task_display_handler::{
 use main::tasks::task_nfc::task_nfc;
 use main::tasks::task_wifi_runner::task_wifi_runner;
 use main::{NUM_NFC_CHANGE_RECEIVERS, NUM_NOTIFICATION_RECEIVERS};
-use main::{NotificationType, initalize_logger, initialize_peripherals, mk_static};
+use main::{NotificationType, device_client_id, initalize_logger, initialize_peripherals, mk_static};
 use nfc::{Nfc, STM25DV64KC};
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
@@ -196,7 +196,12 @@ async fn main(spawner: Spawner) {
     let nfc_change_sender = nfc_change.sender();
     let nfc_change_receiver = nfc_change.receiver().unwrap();
 
-    spawner.must_spawn(task_nfc(nfc, sender, nfc_change_sender));
+    // MQTT client ID derived from the chip's eFuse MAC. Unique per device,
+    // no per-device provisioning, one OTA binary serves the whole fleet.
+    let client_id: &'static str = mk_static!(heapless::String<12>, device_client_id()).as_str();
+    log::info!("Device client ID: {}", client_id);
+
+    spawner.must_spawn(task_nfc(nfc, sender, nfc_change_sender, client_id));
     spawner.must_spawn(task_display_handler(display, display_channel, indicator));
     spawner.must_spawn(task_wifi_runner(
         stack,
@@ -208,5 +213,6 @@ async fn main(spawner: Spawner) {
         display_channel,
         peripherals.SHA,
         peripherals.RSA,
+        client_id,
     ));
 }
