@@ -291,6 +291,22 @@ Protocol logic (trigger parsing, CRC verify, progress tracking, URL parsing, fla
 
 `./main/publish-firmware.sh <version> [--secure]` automates the build → save-image → (optional sign) → CRC32 → copy-to-website pipeline and prints the MQTT trigger JSON ready to publish. Paths configured via `FIRMWARE_HOST_DIR` and `FIRMWARE_BASE_URL` in `.env`.
 
+### Runtime-derived MQTT client ID (one binary, whole fleet)
+
+OTA only works if every device identifies itself uniquely to the broker. The original build baked `MQTT_CLIENT_ID` in at compile time via `.env`, which meant one binary-per-device — incompatible with OTA.
+
+The client ID is now derived at boot from the chip's eFuse MAC address, formatted as a 12-character uppercase hex string (e.g. `80F1B2ECB820`). See `device_client_id()` in `src/lib.rs`. It's computed once in `main()` and passed into both `task_nfc` and `task_wifi_runner`.
+
+**What this buys us:**
+
+- One binary serves every device in the fleet — OTA can now legitimately target `public/ota`
+- Zero per-device provisioning — the MAC is unique, burned in by Espressif at manufacturing
+- The NFC registration response (`REG:C:<id>;;`) surfaces the MAC to the app so it can register the device without the user typing anything
+
+**AWS IoT implications:**
+
+The existing policy uses wildcards (`topic/*/root/*`, `client/*`), so it accepts any MAC-based client ID without modification. Only caveat: if you had an existing Thing named `000001`, it becomes orphaned after the device reboots under its MAC. Either re-register via NFC or update the DB row manually.
+
 ---
 
 ## Testing (dev mode)
