@@ -787,11 +787,8 @@ async fn handle_live_mqtt_updates<'a>(
         .map_err(|_| "Failed to format raw topic")?;
 
     let mut config_topic = String::<64>::new();
-    core::fmt::write(
-        &mut config_topic,
-        format_args!("{}/root/config", client_id),
-    )
-    .map_err(|_| "Failed to format config topic")?;
+    core::fmt::write(&mut config_topic, format_args!("{}/root/config", client_id))
+        .map_err(|_| "Failed to format config topic")?;
 
     let mut response_topic = String::<64>::new();
     core::fmt::write(
@@ -801,11 +798,8 @@ async fn handle_live_mqtt_updates<'a>(
     .map_err(|_| "Failed to format response topic")?;
 
     let mut ping_topic = String::<64>::new();
-    core::fmt::write(
-        &mut ping_topic,
-        format_args!("{}/root/ping", client_id),
-    )
-    .map_err(|_| "Failed to format ping topic")?;
+    core::fmt::write(&mut ping_topic, format_args!("{}/root/ping", client_id))
+        .map_err(|_| "Failed to format ping topic")?;
 
     let mut ota_topic = String::<64>::new();
     core::fmt::write(&mut ota_topic, format_args!("{}/root/ota", client_id))
@@ -886,14 +880,13 @@ async fn handle_live_mqtt_updates<'a>(
         }
     }
 
-    // Mark the running app valid now that we've proven the full OTA path
-    // works. If any earlier step failed this is skipped, and the bootloader
-    // rolls back on the next reset.
-    if confirm_ota_boot() {
-        // Just rebooted from a successful OTA — let the user know. Whatever
-        // normal content comes in next (bible verse, clock, etc.) will
-        // replace this on the next refresh.
+    // If we just booted from a new OTA partition, show the user a success
+    // message BEFORE marking valid. This way, if the display subsystem is
+    // broken in the new firmware, mark_valid is never called and the
+    // bootloader rolls back on the next reset.
+    if is_ota_boot() {
         queue_text_display(display_channel, OTA_COMPLETE_MSG);
+        mark_ota_valid();
     }
 
     // Subscribe to saved dynamic topics
@@ -1321,34 +1314,27 @@ async fn handle_live_mqtt_updates<'a>(
     }
 }
 
-/// Mark the running app as valid if we just booted from a new OTA partition.
-///
-/// Called only after WiFi + MQTT + OTA-topic subscription have all succeeded,
-/// so it acts as a "full OTA path verified" gate. If any prerequisite fails,
-/// this is skipped and the bootloader rolls back on the next reset.
-///
-/// Returns `true` if this was a fresh OTA boot (caller can show a "complete"
-/// message), `false` otherwise.
-fn confirm_ota_boot() -> bool {
+/// Check if this boot is from a freshly-written OTA partition that hasn't
+/// been marked valid yet.
+fn is_ota_boot() -> bool {
+    use ota::FlashWriter;
     match crate::ota_flash::EspFlashWriter::new() {
-        Ok(flash) => {
-            let mut mgr = ota::OtaManager::new(flash);
-            match mgr.confirm_boot_if_needed() {
-                Ok(true) => {
-                    log::info!("OTA firmware validated on first boot");
-                    true
-                }
-                Ok(false) => false, // not an OTA boot, nothing to do
-                Err(e) => {
-                    log::error!("OTA boot validation failed: {:?}", e);
-                    false
-                }
-            }
-        }
-        Err(e) => {
-            log::warn!("Could not check OTA boot status: {:?}", e);
-            false
-        }
+        Ok(flash) => flash.is_pending_verification(),
+        Err(_) => false,
+    }
+}
+
+/// Mark the currently running OTA firmware as valid so the bootloader won't
+/// roll back. Called only after we've verified WiFi + MQTT + OTA subscription
+/// + display all work correctly.
+fn mark_ota_valid() {
+    use ota::FlashWriter;
+    match crate::ota_flash::EspFlashWriter::new() {
+        Ok(mut flash) => match flash.mark_valid() {
+            Ok(()) => log::info!("OTA firmware validated on first boot"),
+            Err(e) => log::error!("OTA boot validation failed: {:?}", e),
+        },
+        Err(e) => log::warn!("Could not mark OTA valid: {:?}", e),
     }
 }
 
