@@ -6,8 +6,8 @@
 use core::ffi::CStr;
 use core::fmt::Write;
 
-use embassy_net::tcp::TcpSocket;
 use embassy_net::Stack;
+use embassy_net::tcp::TcpSocket;
 use embassy_time::Duration;
 use embedded_io_async::Write as AsyncWrite;
 use esp_mbedtls::{Certificates, Mode, TlsVersion, X509, asynch::Session};
@@ -163,7 +163,10 @@ pub async fn download_and_flash<'a>(
     // Check for HTTP 200 status
     let header_str = core::str::from_utf8(&header_buf[..header_end]).unwrap_or("");
     if !header_str.starts_with("HTTP/1.1 200") && !header_str.starts_with("HTTP/1.0 200") {
-        log::error!("OTA: unexpected response: {}", &header_str[..header_str.len().min(40)]);
+        log::error!(
+            "OTA: unexpected response: {}",
+            &header_str[..header_str.len().min(40)]
+        );
         return Err("OTA server returned non-200 status");
     }
 
@@ -208,11 +211,10 @@ pub async fn download_and_flash<'a>(
     );
 
     // Step 10: Finalize (size + CRC verify + set boot target)
-    mgr.finalize_update(trigger.version)
-        .map_err(|e| {
-            log::error!("OTA finalize failed: {:?}", e);
-            "OTA finalize failed"
-        })?;
+    mgr.finalize_update(trigger.version).map_err(|e| {
+        log::error!("OTA finalize failed: {:?}", e);
+        "OTA finalize failed"
+    })?;
 
     log::info!("OTA: firmware verified and boot target set");
 
