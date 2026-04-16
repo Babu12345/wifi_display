@@ -19,7 +19,7 @@ use crate::ota_flash::EspFlashWriter;
 const OTA_SOCKET_TIMEOUT_SECS: u64 = 120;
 
 /// TCP buffer size for OTA downloads (smaller than MQTT since we only do GET)
-const OTA_TCP_BUFFER_SIZE: usize = 4096;
+const OTA_TCP_BUFFER_SIZE: usize = ota::DEFAULT_CHUNK_SIZE;
 
 // Static buffers for OTA TCP socket to avoid stack overflow
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
@@ -180,7 +180,7 @@ pub async fn download_and_flash<'a>(
     }
 
     // Step 9: Stream remaining body chunks to flash
-    let mut chunk_buf = [0u8; ota::DEFAULT_CHUNK_SIZE];
+    let mut chunk_buf = [0u8; OTA_TCP_BUFFER_SIZE];
     loop {
         let n = session
             .read(&mut chunk_buf)
