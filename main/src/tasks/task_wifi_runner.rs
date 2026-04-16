@@ -98,7 +98,7 @@ const GET_STARTED_URL: &str = env!("GET_STARTED_URL");
 const SUPPORT_URL: &str = env!("SUPPORT_URL");
 
 /// Shown while a firmware update is downloading
-const OTA_UPDATING_MSG: &str = "Updating...\n\nDo not unplug.";
+const OTA_UPDATING_MSG: &str = "Updating...\n\nKeep WiFi connected.";
 
 /// Shown briefly after a successful OTA boot, before normal content resumes
 const OTA_COMPLETE_MSG: &str = "All set!\n\n\
