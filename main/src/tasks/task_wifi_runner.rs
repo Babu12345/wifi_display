@@ -157,9 +157,19 @@ static CHUNK_META: Mutex<CriticalSectionRawMutex, ChunkMeta> = Mutex::new(ChunkM
 /// outer loop after the MQTT session is torn down (freeing TLS heap).
 static PENDING_OTA: Mutex<CriticalSectionRawMutex, Option<([u8; 512], usize)>> = Mutex::new(None);
 
-/// Sentinel error returned from the MQTT handler when an OTA trigger arrives,
-/// used by the outer loop to run the OTA download in a clean context.
-const OTA_REQUESTED_SIGNAL: &str = "__ota_requested__";
+/// Reasons the MQTT handler can exit with an error.
+#[derive(Debug)]
+enum MqttSessionError {
+    /// OTA trigger received — the caller should tear down TLS and run the
+    /// download from the outer loop where the heap is free.
+    OtaRequested,
+    /// The MQTT broker connection failed during setup.
+    ConnectionFailed,
+    /// A topic subscription failed during setup.
+    SubscriptionFailed,
+    /// An error occurred while receiving or processing messages.
+    ReceiveError,
+}
 
 /// CA cert for OTA firmware downloads (ISRG Root X1 for GitHub Pages)
 const OTA_CA_CERT: &str = concat!(
@@ -564,7 +574,7 @@ async fn task_wifi_runner_inner(
                         }
                     }
                 }
-                Err(e) if e == OTA_REQUESTED_SIGNAL => {
+                Err(MqttSessionError::OtaRequested) => {
                     log::info!("OTA requested, running download after MQTT teardown");
 
                     // Show the user that something is happening — e-ink takes
@@ -608,7 +618,7 @@ async fn task_wifi_runner_inner(
                     }
                 }
                 Err(e) => {
-                    log::error!("MQTT error: {}", e);
+                    log::error!("MQTT error: {:?}", e);
                 }
             }
 
@@ -648,7 +658,7 @@ async fn handle_live_mqtt_updates<'a>(
     display_channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
     tls: &'a esp_mbedtls::Tls<'a>,
     client_id: &str,
-) -> Result<NotificationType, &'static str> {
+) -> Result<NotificationType, MqttSessionError> {
     use embassy_net::tcp::TcpSocket;
     use esp_mbedtls::{Certificates, Mode, TlsVersion, X509, asynch::Session};
     use rust_mqtt::client::{client::MqttClient, client_config::ClientConfig};
@@ -667,9 +677,9 @@ async fn handle_live_mqtt_updates<'a>(
     let broker_ip = stack
         .dns_query(MQTT_BROKER, embassy_net::dns::DnsQueryType::A)
         .await
-        .map_err(|_| "MQTT DNS lookup failed")?
+        .map_err(|_| MqttSessionError::ConnectionFailed)?
         .first()
-        .ok_or("No MQTT broker IP found")?
+        .ok_or(MqttSessionError::ConnectionFailed)?
         .clone();
 
     log::info!("MQTT broker IP: {}", broker_ip);
@@ -688,7 +698,7 @@ async fn handle_live_mqtt_updates<'a>(
         .connect((broker_ip, MQTT_PORT))
         .await
         .inspect_err(|e| log::error!("Error: {e:?}"))
-        .map_err(|_| "Failed to connect to MQTT broker")?;
+        .map_err(|_| MqttSessionError::ConnectionFailed)?;
 
     log::info!("Connected to MQTT broker, starting TLS handshake...");
 
@@ -736,14 +746,14 @@ async fn handle_live_mqtt_updates<'a>(
         tls.reference(),
     )
     .inspect_err(|e| log::error!("Error: {e:?}"))
-    .map_err(|_| "Failed to create TLS session")?;
+    .map_err(|_| MqttSessionError::ConnectionFailed)?;
 
     // Perform TLS handshake
     log::info!("Performing TLS handshake...");
     session
         .connect()
         .await
-        .map_err(|_| "TLS handshake failed")?;
+        .map_err(|_| MqttSessionError::ConnectionFailed)?;
 
     log::info!("TLS connection established");
 
@@ -777,33 +787,33 @@ async fn handle_live_mqtt_updates<'a>(
         Ok(()) => log::info!("Connected to MQTT broker"),
         Err(e) => {
             log::error!("MQTT connection error: {:?}", e);
-            return Err("Failed to connect to MQTT broker");
+            return Err(MqttSessionError::ConnectionFailed);
         }
     }
 
     // Construct topic paths using client ID
     let mut raw_topic = String::<64>::new();
     core::fmt::write(&mut raw_topic, format_args!("{}/root/raw", client_id))
-        .map_err(|_| "Failed to format raw topic")?;
+        .map_err(|_| MqttSessionError::ConnectionFailed)?;
 
     let mut config_topic = String::<64>::new();
     core::fmt::write(&mut config_topic, format_args!("{}/root/config", client_id))
-        .map_err(|_| "Failed to format config topic")?;
+        .map_err(|_| MqttSessionError::ConnectionFailed)?;
 
     let mut response_topic = String::<64>::new();
     core::fmt::write(
         &mut response_topic,
         format_args!("{}/root/response", client_id),
     )
-    .map_err(|_| "Failed to format response topic")?;
+    .map_err(|_| MqttSessionError::ConnectionFailed)?;
 
     let mut ping_topic = String::<64>::new();
     core::fmt::write(&mut ping_topic, format_args!("{}/root/ping", client_id))
-        .map_err(|_| "Failed to format ping topic")?;
+        .map_err(|_| MqttSessionError::ConnectionFailed)?;
 
     let mut ota_topic = String::<64>::new();
     core::fmt::write(&mut ota_topic, format_args!("{}/root/ota", client_id))
-        .map_err(|_| "Failed to format ota topic")?;
+        .map_err(|_| MqttSessionError::ConnectionFailed)?;
 
     let reserved_topics: [&str; 5] = [
         raw_topic.as_str(),
@@ -840,7 +850,7 @@ async fn handle_live_mqtt_updates<'a>(
         Ok(_) => log::info!("Subscribed to topic: {}", raw_topic.as_str()),
         Err(e) => {
             log::error!("MQTT subscription error: {:?}", e);
-            return Err("Failed to subscribe to MQTT topic");
+            return Err(MqttSessionError::SubscriptionFailed);
         }
     }
 
@@ -849,7 +859,7 @@ async fn handle_live_mqtt_updates<'a>(
         Ok(_) => log::info!("Subscribed to topic: {}", config_topic.as_str()),
         Err(e) => {
             log::error!("MQTT config subscription error: {:?}", e);
-            return Err("Failed to subscribe to config topic");
+            return Err(MqttSessionError::SubscriptionFailed);
         }
     }
 
@@ -858,7 +868,7 @@ async fn handle_live_mqtt_updates<'a>(
         Ok(_) => log::info!("Subscribed to topic: {}", ping_topic.as_str()),
         Err(e) => {
             log::error!("MQTT ping subscription error: {:?}", e);
-            return Err("Failed to subscribe to ping topic");
+            return Err(MqttSessionError::SubscriptionFailed);
         }
     }
 
@@ -867,7 +877,7 @@ async fn handle_live_mqtt_updates<'a>(
         Ok(_) => log::info!("Subscribed to topic: {}", ota_topic.as_str()),
         Err(e) => {
             log::error!("MQTT OTA subscription error: {:?}", e);
-            return Err("Failed to subscribe to OTA topic");
+            return Err(MqttSessionError::SubscriptionFailed);
         }
     }
 
@@ -876,7 +886,7 @@ async fn handle_live_mqtt_updates<'a>(
         Ok(_) => log::info!("Subscribed to topic: {}", OTA_BROADCAST_TOPIC),
         Err(e) => {
             log::error!("MQTT broadcast OTA subscription error: {:?}", e);
-            return Err("Failed to subscribe to broadcast OTA topic");
+            return Err(MqttSessionError::SubscriptionFailed);
         }
     }
 
@@ -1206,7 +1216,7 @@ async fn handle_live_mqtt_updates<'a>(
                         // gets dropped here, freeing ~30 KB of heap for the OTA
                         // TLS session that runs next.
                         client.disconnect().await.ok();
-                        return Err(OTA_REQUESTED_SIGNAL);
+                        return Err(MqttSessionError::OtaRequested);
                     }
                     t if dynamic_topics.iter().any(|dt| dt.as_str() == t) => {
                         // Handle messages from dynamically subscribed topics (live updates)
@@ -1307,7 +1317,7 @@ async fn handle_live_mqtt_updates<'a>(
                         save_last_update_timestamp(ts);
                     }
                     client.disconnect().await.ok();
-                    return Err("MQTT receive error");
+                    return Err(MqttSessionError::ReceiveError);
                 }
             }
         }
