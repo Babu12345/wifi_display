@@ -398,6 +398,10 @@ async fn display_qr_code(
     // scale, which uses stack scratch (~1 KB) — that burst was clobbering
     // esp-wifi state and crashing the next WiFi RX after switching out of
     // QRCode mode (e.g. reconnecting after NFC credentials update).
+    // Cap at ~80% of the display's shorter dimension so the QR doesn't
+    // fill the whole screen edge-to-edge; matches the visual of the prior
+    // MAX_SCALE=7 design for typical URLs.
+    const QR_MAX_SIZE: u32 = 240;
     url::Qr::new(url)
         .render_to_buffer_centered::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(
             frame,
@@ -405,7 +409,7 @@ async fn display_qr_code(
             0,
             DISPLAY_WIDTH,
             DISPLAY_HEIGHT,
-            DISPLAY_HEIGHT, // cap at the smaller display dimension
+            QR_MAX_SIZE,
         )
         .ok_or("Failed to generate QR code")?;
 

@@ -62,12 +62,12 @@ esp-mbedtls = { git = "https://github.com/Babu12345/esp-mbedtls/", package = "es
 # Private GitHub repos — HTTPS requires a PAT in your git credential helper
 # (e.g. `gh auth login` or osxkeychain). Use SSH urls instead if that's not set up.
 nfc = { git = "https://github.com/Babu12345/rusty_nfc.git", rev = "0796621c3fce15030b83a26531a274700fb5edce", default-features = false }
-error = { path = "/Users/babuwanyeki/Documents/Rusty/eink_display/error", default-features = false }
-spi = { path = "/Users/babuwanyeki/Documents/Rusty/eink_display/spi", default-features = false }
-display = { path = "/Users/babuwanyeki/Documents/Rusty/eink_display/display", default-features = false }
+error = { git = "https://github.com/Babu12345/eink_display.git", rev = "47cb09006199f4336e8f226588169703d5538d88", default-features = false }
+spi = { git = "https://github.com/Babu12345/eink_display.git", rev = "47cb09006199f4336e8f226588169703d5538d88", default-features = false }
+display = { git = "https://github.com/Babu12345/eink_display.git", rev = "47cb09006199f4336e8f226588169703d5538d88", default-features = false }
 storage = { git = "https://github.com/Babu12345/display_storage.git", rev = "f96c4f8c7cef2a9874f16e6768c2e08db86d70c4", default-features = false }
-text = { path = "/Users/babuwanyeki/Documents/Rusty/eink_display/text", default-features = false }
-url = { path = "/Users/babuwanyeki/Documents/Rusty/eink_display/url", default-features = false }
+text = { git = "https://github.com/Babu12345/eink_display.git", rev = "47cb09006199f4336e8f226588169703d5538d88", default-features = false }
+url = { git = "https://github.com/Babu12345/eink_display.git", rev = "47cb09006199f4336e8f226588169703d5538d88", default-features = false }
 ota = { git = "https://github.com/Babu12345/ota.git", rev = "30d80551e4a6ac827c98f2241e77eebae169d57c" }
 
 # Patch esp-wifi to use forked version with configurable TX power
