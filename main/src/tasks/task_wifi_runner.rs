@@ -506,8 +506,6 @@ async fn task_wifi_runner_inner(
                 log::info!("Stopping WiFi before error display...");
                 controller.disconnect().ok();
                 Timer::after(Duration::from_millis(TRANSITION_DELAY_MS)).await;
-                controller.stop().ok();
-                Timer::after(Duration::from_millis(TRANSITION_DELAY_MS)).await;
                 log::info!("WiFi stopped");
 
                 // Now safe to display error message with QR code for support.
