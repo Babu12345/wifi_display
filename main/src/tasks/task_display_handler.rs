@@ -134,8 +134,8 @@ pub async fn task_display_handler(
                     .position(|&b| b == 0)
                     .unwrap_or(text_slice.len());
                 // URL is in next DISPLAY_URL_BUFFER_LENGTH bytes
-                let url_slice =
-                    &buf[DISPLAY_URL_BUFFER_OFFSET..DISPLAY_URL_BUFFER_OFFSET + DISPLAY_URL_BUFFER_LENGTH];
+                let url_slice = &buf[DISPLAY_URL_BUFFER_OFFSET
+                    ..DISPLAY_URL_BUFFER_OFFSET + DISPLAY_URL_BUFFER_LENGTH];
                 let url_len = url_slice
                     .iter()
                     .position(|&b| b == 0)
@@ -452,8 +452,14 @@ async fn display_qr_code(
     Ok(())
 }
 
-/// Update the e-ink display with text and a QR code side by side
-/// Text is rendered on the left with a smaller font, QR code on the right
+/// Update the e-ink display with text and a QR code side by side.
+///
+/// Uses the shared `frame` buffer as scratch for QR generation — qrcodegen
+/// needs two writable buffers (~454 bytes each for version 10), and we carve
+/// them out of `frame` instead of pushing two `[u8; QR_SCRATCH_LEN]` arrays
+/// onto the sync stack. That stack burst was the difference between this
+/// function and `display_qr_code` that triggered the esp-wifi crashes.
+/// Capped at QR version 10 (57×57 modules) which fits any reasonable URL.
 async fn display_text_with_qr(
     display: &mut Display<
         'static,
@@ -468,44 +474,101 @@ async fn display_text_with_qr(
     url: &str,
     frame: &mut [u8; DISPLAY_SIZE_IN_BYTES],
 ) -> Result<(), &'static str> {
+    use url::qrcodegen_no_heap::{QrCode, QrCodeEcc, Version};
+
     log::info!("Updating display with text and QR code");
 
-    // Layout: Text on left (about 55% width), QR on right (about 45% width)
-    // Display is 400x300
-    const TEXT_WIDTH: u32 = 220; // Left side for text
-    const QR_AREA_WIDTH: u32 = 180; // Right side for QR
-    const QR_MAX_SIZE: u32 = 160; // Max QR size to leave some margin
+    // Layout: text on left, QR on right. Display is 400x300.
+    const TEXT_WIDTH: u32 = 220;
+    const QR_AREA_WIDTH: u32 = 180;
+    const QR_MAX_SIZE: u32 = 160;
 
-    // Calculate QR code scale to fit in right area
-    let base_qr = url::Qr::new(url).with_scale(1);
-    let base_size = base_qr.size().ok_or("Failed to generate QR code")?;
+    // Cap at QR version 10. Its scratch is small enough to sit in a single
+    // contiguous slice of `frame`, and its 57 modules at scale ≥2 comfortably
+    // fill the right-hand column.
+    const QR_VERSION_MAX: Version = Version::new(10);
+    const QR_SCRATCH_LEN: usize = QR_VERSION_MAX.buffer_len();
 
-    // Calculate scale that fits in QR area
-    let max_scale = QR_MAX_SIZE / base_size;
-    let scale = if max_scale < 1 { 1 } else { max_scale };
-    let qr_size = base_size * scale;
-
-    // Position QR code centered in right area
-    let qr_x = TEXT_WIDTH + ((QR_AREA_WIDTH - qr_size) / 2);
-    let qr_y = (DISPLAY_HEIGHT - qr_size) / 2;
-
+    // Turn the display on BEFORE rendering. Matches display_text /
+    // display_qr_code, and the .await yields so any tail work queued by
+    // task_wifi_runner's stop path can drain first.
     let mut display_on = display
         .on(false)
         .await
         .map_err(|_| "Failed to turn on display")?;
 
-    // First render text on the left side (this clears the buffer)
+    // Split `frame` into two QR scratch regions and leave the rest as the
+    // drawable region. `encode_text` borrows both scratch slices until the
+    // `QrCode` is dropped, so we extract (size, module bitmap) inside this
+    // block, then release the borrow and use the full `frame` for drawing.
+    //
+    // Module bitmap cache: version 10 = 57×57 = 3249 bits = 407 bytes packed.
+    // Allocated in the outer scope so it survives past the scratch borrow.
+    const MAX_MODULES: usize = 57;
+    const MODULE_BYTES: usize = (MAX_MODULES * MAX_MODULES + 7) / 8;
+    let mut modules = [0u8; MODULE_BYTES];
+    let qr_size: u32 = {
+        let (temp, rest) = frame.split_at_mut(QR_SCRATCH_LEN);
+        let (out, _) = rest.split_at_mut(QR_SCRATCH_LEN);
+        let qr = QrCode::encode_text(
+            url,
+            temp,
+            out,
+            QrCodeEcc::Medium,
+            Version::MIN,
+            QR_VERSION_MAX,
+            None,
+            true,
+        )
+        .map_err(|_| "QR gen failed (url too long for version 10)")?;
+        let size = qr.size() as u32;
+        for y in 0..size {
+            for x in 0..size {
+                if qr.get_module(x as i32, y as i32) {
+                    let bit = (y * size + x) as usize;
+                    modules[bit / 8] |= 1 << (7 - (bit % 8));
+                }
+            }
+        }
+        size
+    };
+    // QrCode dropped, scratch borrow released — `frame` is free to use.
+
+    let max_scale = QR_MAX_SIZE / qr_size;
+    let scale = if max_scale < 1 { 1 } else { max_scale };
+    let qr_pixel_size = qr_size * scale;
+    let qr_x = TEXT_WIDTH + ((QR_AREA_WIDTH - qr_pixel_size) / 2);
+    let qr_y = (DISPLAY_HEIGHT - qr_pixel_size) / 2;
+
+    // Clear the whole frame (drops any leftover scratch bytes) and draw QR.
+    frame.fill(0x00);
+    for y in 0..qr_size {
+        for x in 0..qr_size {
+            let bit = (y * qr_size + x) as usize;
+            if modules[bit / 8] & (1 << (7 - (bit % 8))) != 0 {
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        let px = qr_x + x * scale + dx;
+                        let py = qr_y + y * scale + dy;
+                        if px < DISPLAY_WIDTH && py < DISPLAY_HEIGHT {
+                            let frame_bit = (py * DISPLAY_WIDTH + px) as usize;
+                            let byte_idx = frame_bit / 8;
+                            if byte_idx < DISPLAY_SIZE_IN_BYTES {
+                                frame[byte_idx] |= 1 << (7 - (frame_bit % 8));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Overlay text on the left side (no clear).
     Text::new(text)
         .with_font_size(FontSize::Large10x20)
-        .with_max_width(TEXT_WIDTH - 10) // Leave small margin
+        .with_max_width(TEXT_WIDTH - 10)
         .with_alignment(Alignment::Left)
         .with_position(5, 25)
-        .render_to_buffer::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(frame);
-
-    // Then overlay QR code on the right side (doesn't clear)
-    url::Qr::new(url)
-        .with_position(qr_x as i32, qr_y as i32)
-        .with_scale(scale)
         .render_to_buffer_overlay::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(frame);
 
     display_on
