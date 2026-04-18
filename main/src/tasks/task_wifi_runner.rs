@@ -114,7 +114,7 @@ Scan to get\nthe iPhone app.";
 
 /// Shown after a successful OTA boot. Paired with the App Store QR.
 const OTA_COMPLETE_MSG: &str = "All set!\n\n\
-Your display\nwill refresh\nshortly.\n\n\
+Next display\ncoming soon,\nor refresh now\nfrom the app.\n\n\
 Scan to get\nthe iPhone app.";
 
 /// Shown if the OTA download or verify fails before reboot. Paired with
