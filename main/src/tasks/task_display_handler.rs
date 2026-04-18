@@ -388,53 +388,26 @@ async fn display_qr_code(
 ) -> Result<(), &'static str> {
     log::info!("Updating display with QR code");
 
-    // Calculate the optimal scale that fits within display bounds
-    const MAX_SCALE: u32 = 7;
-    const MIN_SCALE: u32 = 1;
-
-    // Try maximum scale first - if it fits, we're done with one QR generation
-    let qr = url::Qr::new(url).with_scale(MAX_SCALE);
-    let (qr, qr_size) = if let Some(max_size) = qr.size() {
-        if max_size <= DISPLAY_WIDTH && max_size <= DISPLAY_HEIGHT {
-            // Maximum scale fits, use it!
-            (qr, max_size)
-        } else {
-            // Need to calculate smaller scale
-            // Generate at scale 1 to get base module count
-            let base_qr = url::Qr::new(url).with_scale(MIN_SCALE);
-            let base_size = base_qr.size().ok_or("Failed to generate QR code")?;
-
-            // Calculate maximum scale that fits: scale = min(width, height) / base_size
-            let max_width_scale = DISPLAY_WIDTH / base_size;
-            let max_height_scale = DISPLAY_HEIGHT / base_size;
-            let calculated_scale = core::cmp::min(max_width_scale, max_height_scale);
-
-            // Verify we have a valid scale
-            if calculated_scale < MIN_SCALE {
-                return Err("QR code too large for display even at minimum scale");
-            }
-
-            let qr_size = base_size * calculated_scale;
-            let qr = url::Qr::new(url).with_scale(calculated_scale);
-            (qr, qr_size)
-        }
-    } else {
-        return Err("Failed to generate QR code");
-    };
-
-    // Position QR code centered on display
-    let x_pos = ((DISPLAY_WIDTH - qr_size) / 2) as i32;
-    let y_pos = ((DISPLAY_HEIGHT - qr_size) / 2) as i32;
-
-    let qr = qr.with_position(x_pos, y_pos);
-
     let mut display_on = display
         .on(false)
         .await
         .map_err(|_| "Failed to turn on display")?;
 
-    // Render QR code directly into the provided buffer
-    qr.render_to_buffer::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(frame);
+    // One call: encode + auto-scale + center + draw, using `frame` itself as
+    // QR-generation scratch. Previously called `Qr::size()` first to compute
+    // scale, which uses stack scratch (~1 KB) — that burst was clobbering
+    // esp-wifi state and crashing the next WiFi RX after switching out of
+    // QRCode mode (e.g. reconnecting after NFC credentials update).
+    url::Qr::new(url)
+        .render_to_buffer_centered::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(
+            frame,
+            0,
+            0,
+            DISPLAY_WIDTH,
+            DISPLAY_HEIGHT,
+            DISPLAY_HEIGHT, // cap at the smaller display dimension
+        )
+        .ok_or("Failed to generate QR code")?;
 
     // Invert for white QR on black background
     invert_buffer(frame);
