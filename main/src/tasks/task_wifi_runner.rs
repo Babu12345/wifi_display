@@ -107,15 +107,16 @@ const APP_STORE_URL: &str = env!("APP_STORE_URL");
 // rather than auto-wrap to avoid mid-word breaks.
 
 /// Shown while firmware is downloading. Paired with the App Store QR so
-/// users can install/check out the app while they wait.
+/// users can share the app with friends while they wait.
 const OTA_UPDATING_MSG: &str = "Installing\nupdate...\n\n\
 Keep WiFi on\nand don't unplug.\n\n\
-Scan to get\nthe iPhone app.";
+Scan to share\nwith a friend.";
 
-/// Shown after a successful OTA boot. Paired with the App Store QR.
+/// Shown after a successful OTA boot. Paired with the App Store QR so
+/// users can share the app with friends.
 const OTA_COMPLETE_MSG: &str = "All set!\n\n\
 Next display\ncoming soon,\nor refresh now\nfrom the app.\n\n\
-Scan to get\nthe iPhone app.";
+Scan to share\nwith a friend.";
 
 /// Shown if the OTA download or verify fails before reboot. Paired with
 /// the help website QR.
