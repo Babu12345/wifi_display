@@ -1,10 +1,10 @@
 //! Main wifi processor
 
 use core::ffi::CStr;
-use core::str::FromStr;
 
 use serde::Serialize;
 
+use crate::nvs::{self, DisplayMode, MAX_DYNAMIC_TOPICS};
 use crate::tasks::task_display_handler::{
     DISPLAY_CHANNEL_SIZE, DisplayMessage, append_to_display_buffer, queue_frame_ready,
     queue_qr_display, queue_set_max_cycles, queue_text_display, queue_text_with_qr_display,
@@ -27,7 +27,7 @@ use esp_hal::rtc_cntl::SocResetReason;
 use esp_storage::FlashStorage;
 use esp_wifi::wifi::{ClientConfiguration, Configuration, WifiController};
 use heapless::String;
-use nfc::{MAX_NFCDATA_SIZE, NFCData};
+use nfc::MAX_NFCDATA_SIZE;
 use storage::storage::PersistentStorage;
 /// WIFI SSID
 pub const DEFAULT_SSID: &str = "HONESTWIFI-2325-2G";
@@ -136,12 +136,6 @@ const MQTT_PORT: u16 = {
 pub const OTA_BROADCAST_TOPIC: &str = "public/ota";
 /// Max size in bytes of the data being sent via AWS
 pub const MQTT_BUFFER_SIZE: usize = 7_000;
-/// Maximum number of dynamic topic subscriptions
-const MAX_DYNAMIC_TOPICS: usize = 4;
-
-/// Storage size for MQTT topics (must fit in MqttTopics storage area)
-const MQTT_TOPICS_STORAGE_SIZE: usize = 512;
-
 // Static buffers for MQTT to avoid stack overflow
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 
@@ -240,33 +234,6 @@ struct ProcessChunkResult {
     timestamp: Option<u64>,
 }
 
-/// Display mode for the main task
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(u8)]
-enum DisplayMode {
-    /// Live secure updates via MQTT
-    LiveUpdates = 0x00,
-    /// Display custom text from NFC (for low bandwidth)
-    CustomText = 0x01,
-    /// Display QR code from URL via NFC (for low bandwidth)
-    QRCode = 0x02,
-}
-
-impl DisplayMode {
-    fn as_byte(self) -> u8 {
-        self as u8
-    }
-
-    fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            0x00 => Some(DisplayMode::LiveUpdates),
-            0x01 => Some(DisplayMode::CustomText),
-            0x02 => Some(DisplayMode::QRCode),
-            _ => None,
-        }
-    }
-}
-
 /// MQTT response status
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -280,25 +247,6 @@ enum MqttResponseStatus {
 #[derive(Debug, Clone, Copy, Serialize)]
 struct MqttResponse {
     response: MqttResponseStatus,
-}
-
-/// Serializable MQTT topics for persistent storage
-#[derive(serde::Serialize, serde::Deserialize)]
-struct MqttTopicsData {
-    topics: heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS>,
-}
-
-impl MqttTopicsData {
-    fn to_bytes(&self, out: &mut [u8]) -> Result<usize, &'static str> {
-        bincode::serde::encode_into_slice(self, out, bincode::config::standard())
-            .map_err(|_| "Failed to serialize MQTT topics")
-    }
-
-    fn from_bytes(payload: &[u8]) -> Result<Self, &'static str> {
-        bincode::serde::decode_from_slice(payload, bincode::config::standard())
-            .map(|(data, _)| data)
-            .map_err(|_| "Failed to deserialize MQTT topics")
-    }
 }
 
 /// Main application task - manages WiFi connection, MQTT communication, and display modes
@@ -357,13 +305,24 @@ async fn task_wifi_runner_inner(
     let mut ssid: Option<String<32>> = None;
     let mut password: Option<String<64>> = None;
 
-    let mut previously_connected = true;
-    let mut display_mode = load_display_mode();
+    // If the last thing we painted was the disconnect screen (persisted across
+    // reboots), start as !connected so the first successful connect re-paints
+    // WIFI_CONNECTED_MSG instead of leaving the stale error on the e-ink.
+    let mut previously_connected = !nvs::load_wifi_error_flag();
+    let mut display_mode = nvs::load_display_mode();
 
-    // Check reset reason - skip status messages on brownout to preserve last displayed image
+    // Check reset reason. ChipPowerOn covers clean power-up, chip-level
+    // brownout, and super-WDT (ROM reports all three as 0x01); SysBrownOut
+    // covers the slow VDD-sag case. In any of these, the e-ink is still
+    // showing real content, so we don't want the first failed connect to
+    // flash WIFI_DISCONNECTED_MSG over it. Cleared after the first attempt so
+    // a genuinely broken WiFi still reports an error on subsequent retries.
     let reason = reset_reason();
     log::info!("Reset reason: {:?}", reason);
-    let skip_status_messages = matches!(reason, Some(SocResetReason::SysBrownOut));
+    let mut skip_error_on_first_attempt = matches!(
+        reason,
+        Some(SocResetReason::SysBrownOut) | Some(SocResetReason::ChipPowerOn)
+    );
 
     // Main loop - refresh every REFRESH_INTERVAL_SECS seconds
     'process: loop {
@@ -379,16 +338,16 @@ async fn task_wifi_runner_inner(
         let credentials_updated = match pending_notification {
             Some(NotificationType::DisplayText) => {
                 log::info!("DisplayText notification received (NFC)");
-                display_mode = set_display_mode(DisplayMode::CustomText);
+                display_mode = nvs::set_display_mode(DisplayMode::CustomText);
 
-                match load_display_text(&mut storage) {
+                match nvs::load_display_text(&mut storage) {
                     Ok(text) => {
                         log::info!("Queueing custom text for display: {}", text.as_str());
                         queue_text_display(display_channel, &text);
                     }
                     Err(e) => {
                         log::error!("Failed to load display text: {}", e);
-                        display_mode = set_display_mode(DisplayMode::LiveUpdates);
+                        display_mode = nvs::set_display_mode(DisplayMode::LiveUpdates);
                     }
                 }
 
@@ -402,16 +361,16 @@ async fn task_wifi_runner_inner(
             }
             Some(NotificationType::DisplayURL) => {
                 log::info!("DisplayURL notification received (NFC)");
-                display_mode = set_display_mode(DisplayMode::QRCode);
+                display_mode = nvs::set_display_mode(DisplayMode::QRCode);
 
-                match load_display_url(&mut storage) {
+                match nvs::load_display_url(&mut storage) {
                     Ok(url) => {
                         log::info!("Queueing QR code for display: {}", url.as_str());
                         queue_qr_display(display_channel, url.as_str());
                     }
                     Err(e) => {
                         log::error!("Failed to load URL: {}", e);
-                        display_mode = set_display_mode(DisplayMode::LiveUpdates);
+                        display_mode = nvs::set_display_mode(DisplayMode::LiveUpdates);
                     }
                 }
 
@@ -425,12 +384,12 @@ async fn task_wifi_runner_inner(
             }
             Some(NotificationType::LiveSecureUpdates) => {
                 log::info!("LiveSecureUpdates notification received - switching to MQTT mode");
-                display_mode = set_display_mode(DisplayMode::LiveUpdates);
+                display_mode = nvs::set_display_mode(DisplayMode::LiveUpdates);
                 false
             }
             Some(NotificationType::WifiCredentials) => {
                 log::info!("New WiFi credentials received via NFC, connecting to WiFi and MQTT");
-                display_mode = set_display_mode(DisplayMode::LiveUpdates);
+                display_mode = nvs::set_display_mode(DisplayMode::LiveUpdates);
                 true
             }
             None => false,
@@ -455,7 +414,7 @@ async fn task_wifi_runner_inner(
 
         // Check for new WiFi credentials from NFC or loads from the storage if this is the first boot
         if ssid.is_none() || credentials_updated {
-            match load_wifi_credentials(&mut storage) {
+            match nvs::load_wifi_credentials(&mut storage) {
                 Ok((new_ssid, new_password)) => {
                     log::info!(
                         "Loaded WiFi credentials from storage: SSID='{}', password_len={}",
@@ -524,17 +483,21 @@ async fn task_wifi_runner_inner(
                     Err(e) => log::warn!("Failed to set power save mode: {:?}", e),
                 }
 
-                // Show reconnected message if we were previously disconnected
-                // Skip on brownout/power-on to preserve last displayed image
-                if !previously_connected && !skip_status_messages {
+                // Show reconnected message only if the last thing painted was
+                // the disconnect screen. The WifiErrorFlag (persisted) is the
+                // authoritative source here — reset-reason is not, because a
+                // power cycle comes back as ChipPowerOn regardless of state.
+                if !previously_connected {
                     queue_text_with_qr_display(
                         display_channel,
                         WIFI_CONNECTED_MSG,
                         GET_STARTED_URL,
                     );
                     log::info!("Queued WiFi reconnected message for display");
+                    nvs::save_wifi_error_flag(false);
                 }
                 previously_connected = true;
+                skip_error_on_first_attempt = false;
             }
             Err(e) => {
                 log::error!("Failed to connect to WiFi with error: {e:?}");
@@ -547,12 +510,16 @@ async fn task_wifi_runner_inner(
                 Timer::after(Duration::from_millis(TRANSITION_DELAY_MS)).await;
                 log::info!("WiFi stopped");
 
-                // Now safe to display error message with QR code for support
-                // Skip on brownout/power-on to preserve last displayed image
-                if previously_connected && !skip_status_messages {
+                // Now safe to display error message with QR code for support.
+                // Skip on the first attempt after a brownout/power-on so a
+                // transient reboot doesn't flash the error over good content;
+                // subsequent retries in the same boot still paint it.
+                if previously_connected && !skip_error_on_first_attempt {
                     queue_text_with_qr_display(display_channel, WIFI_DISCONNECTED_MSG, SUPPORT_URL);
                     log::info!("Queued WiFi error message with QR for display");
+                    nvs::save_wifi_error_flag(true);
                 }
+                skip_error_on_first_attempt = false;
                 Timer::after(Duration::from_secs(RETRY_DELAY_SECS)).await;
                 previously_connected = false;
                 continue 'process;
@@ -576,10 +543,10 @@ async fn task_wifi_runner_inner(
                     // Process the notification that caused the exit
                     match notif {
                         NotificationType::DisplayText => {
-                            display_mode = set_display_mode(DisplayMode::CustomText);
+                            display_mode = nvs::set_display_mode(DisplayMode::CustomText);
                         }
                         NotificationType::DisplayURL => {
-                            display_mode = set_display_mode(DisplayMode::QRCode);
+                            display_mode = nvs::set_display_mode(DisplayMode::QRCode);
                         }
                         NotificationType::LiveSecureUpdates => {
                             // Already in LiveUpdates mode, ignore
@@ -695,7 +662,9 @@ async fn handle_live_mqtt_updates<'a>(
         .await
         .map_err(MqttSessionError::DnsLookupFailed)?
         .first()
-        .ok_or(MqttSessionError::DnsLookupFailed(embassy_net::dns::Error::Failed))?
+        .ok_or(MqttSessionError::DnsLookupFailed(
+            embassy_net::dns::Error::Failed,
+        ))?
         .clone();
 
     log::info!("MQTT broker IP: {}", broker_ip);
@@ -836,7 +805,7 @@ async fn handle_live_mqtt_updates<'a>(
     ];
 
     // Load saved dynamic topics from storage
-    let mut dynamic_topics = load_mqtt_topics();
+    let mut dynamic_topics = nvs::load_mqtt_topics();
 
     // Pending subscription changes (applied at start of loop)
     let mut pending_subscribe: Option<String<64>> = None;
@@ -845,15 +814,15 @@ async fn handle_live_mqtt_updates<'a>(
     let mut topics_changed = false;
 
     // Rate limiting for live updates - load saved value or default to 0
-    let mut min_update_interval_secs: u32 = load_min_update_interval().unwrap_or(0);
+    let mut min_update_interval_secs: u32 = nvs::load_min_update_interval().unwrap_or(0);
     // Track last update Unix timestamp (persisted to flash, survives reboots)
-    let mut last_update_unix_ts: Option<u64> = load_last_update_timestamp();
+    let mut last_update_unix_ts: Option<u64> = nvs::load_last_update_timestamp();
     if let Some(ts) = last_update_unix_ts {
         log::info!("Loaded last update Unix timestamp: {}", ts);
     }
 
     // Load and apply saved max_cycles setting
-    if let Some(cycles) = load_max_cycles() {
+    if let Some(cycles) = nvs::load_max_cycles() {
         queue_set_max_cycles(display_channel, cycles);
     }
 
@@ -971,7 +940,7 @@ async fn handle_live_mqtt_updates<'a>(
         // Save topics to storage if changed
         if topics_changed {
             topics_changed = false;
-            save_mqtt_topics(&dynamic_topics);
+            nvs::save_mqtt_topics(&dynamic_topics);
         }
 
         // Use select to await notification, ping timer, or MQTT message concurrently
@@ -1010,7 +979,7 @@ async fn handle_live_mqtt_updates<'a>(
                                     if result.success {
                                         if let Some(ts) = result.timestamp {
                                             last_update_unix_ts = Some(ts);
-                                            save_last_update_timestamp(ts);
+                                            nvs::save_last_update_timestamp(ts);
                                         }
                                     }
                                     let response = MqttResponse {
@@ -1110,7 +1079,7 @@ async fn handle_live_mqtt_updates<'a>(
                                 // Handle min_update_interval setting
                                 if let Some(interval) = config.min_update_interval {
                                     min_update_interval_secs = interval;
-                                    save_min_update_interval(interval);
+                                    nvs::save_min_update_interval(interval);
                                     log::info!(
                                         "Set minimum update interval to {} seconds",
                                         interval
@@ -1121,7 +1090,7 @@ async fn handle_live_mqtt_updates<'a>(
                                 if let Some(cycles) = config.max_cycles {
                                     log::info!("Setting display max cycles to {}", cycles);
                                     queue_set_max_cycles(display_channel, cycles);
-                                    save_max_cycles(cycles);
+                                    nvs::save_max_cycles(cycles);
                                 }
 
                                 // Send response if required
@@ -1267,7 +1236,7 @@ async fn handle_live_mqtt_updates<'a>(
                                         if let Some(ts) = result.timestamp {
                                             last_update_unix_ts = Some(ts);
                                             // Persist the timestamp so rate limiting survives reboots
-                                            save_last_update_timestamp(ts);
+                                            nvs::save_last_update_timestamp(ts);
                                         }
                                     }
                                     let response = MqttResponse {
@@ -1311,7 +1280,7 @@ async fn handle_live_mqtt_updates<'a>(
                 if e != ReasonCode::ImplementationSpecificError {
                     // Save timestamp before disconnecting so rate limiting persists across reconnects
                     if let Some(ts) = last_update_unix_ts {
-                        save_last_update_timestamp(ts);
+                        nvs::save_last_update_timestamp(ts);
                     }
                     client.disconnect().await.ok();
                     return Err(MqttSessionError::ReceiveError);
@@ -1348,306 +1317,6 @@ fn mark_ota_valid() {
 /// Check if a topic is a reserved core topic that cannot be dynamically subscribed/unsubscribed
 fn is_reserved_topic(topic: &str, reserved: &[&str]) -> bool {
     reserved.iter().any(|r| *r == topic)
-}
-
-/// Load WiFi credentials from storage
-fn load_wifi_credentials(
-    storage: &mut PersistentStorage<FlashStorage>,
-) -> Result<(String<32>, String<64>), &'static str> {
-    let data = storage
-        .read(storage::storage::StorageContents::WifiCredentials)
-        .map_err(|_| "Failed to read WiFi credentials from storage")?;
-
-    let wifi_data = NFCData::from_bytes(data).map_err(|_| "Failed to parse WiFi credentials")?;
-
-    match wifi_data {
-        NFCData::Wifi(ssid_data, password_data) => {
-            let ssid = String::from_str(ssid_data.as_str())
-                .map_err(|_| "Failed to convert SSID to String")?;
-            let password = String::from_str(password_data.as_str())
-                .map_err(|_| "Failed to convert password to String")?;
-            Ok((ssid, password))
-        }
-        _ => Err("Storage contains non-WiFi credential data"),
-    }
-}
-
-/// Load display text from storage
-fn load_display_text(
-    storage: &mut PersistentStorage<FlashStorage>,
-) -> Result<String<MAX_NFCDATA_SIZE>, &'static str> {
-    let data = storage
-        .read(storage::storage::StorageContents::DisplayText)
-        .map_err(|_| "Failed to read display text from storage")?;
-
-    let text_data = NFCData::from_bytes(data).map_err(|_| "Failed to parse display text")?;
-
-    match text_data {
-        NFCData::Text(text) => String::from_str(text.as_str())
-            .map_err(|_| "Failed to convert text to String or text too long"),
-        _ => Err("Storage contains non-text data"),
-    }
-}
-
-/// Load display URL from storage
-fn load_display_url(
-    storage: &mut PersistentStorage<FlashStorage>,
-) -> Result<String<MAX_NFCDATA_SIZE>, &'static str> {
-    let data = storage
-        .read(storage::storage::StorageContents::DisplayURL)
-        .map_err(|_| "Failed to read display URL from storage")?;
-
-    let url_data = NFCData::from_bytes(data).map_err(|_| "Failed to parse display URL")?;
-
-    match url_data {
-        NFCData::Uri(url) => String::from_str(url.as_str())
-            .map_err(|_| "Failed to convert URL to String or URL too long"),
-        _ => Err("Storage contains non-URL data"),
-    }
-}
-
-/// Load min_update_interval setting from flash storage (stored as u32, 4 bytes)
-fn load_min_update_interval() -> Option<u32> {
-    let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    match storage.read(storage::storage::StorageContents::MinUpdateInterval) {
-        Ok(data) => {
-            // Check if storage is empty (0xFF means uninitialized)
-            if data[0] == 0xFF && data[1] == 0xFF && data[2] == 0xFF && data[3] == 0xFF {
-                log::info!("No saved min_update_interval found");
-                return None;
-            }
-            let interval = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-            log::info!(
-                "Loaded min_update_interval from storage: {} seconds",
-                interval
-            );
-            Some(interval)
-        }
-        Err(e) => {
-            log::error!("Failed to read min_update_interval: {:?}", e);
-            None
-        }
-    }
-}
-
-/// Load dynamic topics from flash storage using bincode
-fn load_mqtt_topics() -> heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS> {
-    let mut storage_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    match storage.read(storage::storage::StorageContents::MqttTopics) {
-        Ok(data) => {
-            // Check if storage is empty (0xFF means uninitialized)
-            if data[0] == 0xFF {
-                log::info!("No saved MQTT topics found");
-                return heapless::Vec::new();
-            }
-
-            match MqttTopicsData::from_bytes(data) {
-                Ok(mqtt_data) => {
-                    log::info!("Loaded {} MQTT topics from storage", mqtt_data.topics.len());
-                    mqtt_data.topics
-                }
-                Err(e) => {
-                    log::warn!("Failed to parse MQTT topics: {}", e);
-                    heapless::Vec::new()
-                }
-            }
-        }
-        Err(e) => {
-            log::error!("Failed to read MQTT topics: {:?}", e);
-            heapless::Vec::new()
-        }
-    }
-}
-
-/// Load max_cycles setting from flash storage (stored as u16, 2 bytes)
-fn load_max_cycles() -> Option<u8> {
-    let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    match storage.read(storage::storage::StorageContents::MaxCyclesBeforeFullRefresh) {
-        Ok(data) => {
-            // Check if storage is empty (0xFF means uninitialized)
-            if data[0] == 0xFF && data[1] == 0xFF {
-                log::info!("No saved max_cycles found");
-                return None;
-            }
-            let cycles = u16::from_le_bytes([data[0], data[1]]);
-            log::info!("Loaded max_cycles from storage: {}", cycles);
-            if cycles == 0 {
-                log::info!("Ignoring saved max_cycles of 0");
-                return None;
-            }
-            Some(cycles as u8)
-        }
-        Err(e) => {
-            log::error!("Failed to read max_cycles: {:?}", e);
-            None
-        }
-    }
-}
-
-/// Save dynamic topics to flash storage using bincode
-fn save_mqtt_topics(topics: &heapless::Vec<String<64>, MAX_DYNAMIC_TOPICS>) {
-    let mut storage_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    let data = MqttTopicsData {
-        topics: topics.clone(),
-    };
-
-    let mut encode_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
-    match data.to_bytes(&mut encode_buf) {
-        Ok(len) => {
-            match storage.write_bytes(
-                storage::storage::StorageContents::MqttTopics,
-                0,
-                &encode_buf[..len],
-            ) {
-                Ok(_) => log::info!(
-                    "Saved {} MQTT topics to storage ({} bytes)",
-                    topics.len(),
-                    len
-                ),
-                Err(e) => log::error!("Failed to write MQTT topics: {:?}", e),
-            }
-        }
-        Err(e) => log::error!("Failed to serialize MQTT topics: {}", e),
-    }
-}
-
-/// Save max_cycles setting to flash storage (stored as u16, 2 bytes)
-fn save_max_cycles(cycles: u8) {
-    let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    let bytes = (cycles as u16).to_le_bytes();
-    match storage.write_bytes(
-        storage::storage::StorageContents::MaxCyclesBeforeFullRefresh,
-        0,
-        &bytes,
-    ) {
-        Ok(_) => log::info!("Saved max_cycles to storage: {}", cycles),
-        Err(e) => log::error!("Failed to write max_cycles: {:?}", e),
-    }
-}
-
-/// Save min_update_interval setting to flash storage (stored as u32, 4 bytes)
-fn save_min_update_interval(interval: u32) {
-    let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    let bytes = interval.to_le_bytes();
-    match storage.write_bytes(
-        storage::storage::StorageContents::MinUpdateInterval,
-        0,
-        &bytes,
-    ) {
-        Ok(_) => log::info!("Saved min_update_interval to storage: {} seconds", interval),
-        Err(e) => log::error!("Failed to write min_update_interval: {:?}", e),
-    }
-}
-
-/// Load last update timestamp from flash storage (stored as u64, 8 bytes)
-/// Returns seconds since boot when last successful update occurred
-fn load_last_update_timestamp() -> Option<u64> {
-    let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    match storage.read(storage::storage::StorageContents::LastUpdateTimestamp) {
-        Ok(data) => {
-            // Check if storage is empty (0xFF means uninitialized)
-            if data[0] == 0xFF
-                && data[1] == 0xFF
-                && data[2] == 0xFF
-                && data[3] == 0xFF
-                && data[4] == 0xFF
-                && data[5] == 0xFF
-                && data[6] == 0xFF
-                && data[7] == 0xFF
-            {
-                log::info!("No saved last_update_timestamp found");
-                return None;
-            }
-            let timestamp = u64::from_le_bytes([
-                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-            ]);
-            log::info!(
-                "Loaded last_update_timestamp from storage: {} seconds",
-                timestamp
-            );
-            Some(timestamp)
-        }
-        Err(e) => {
-            log::error!("Failed to read last_update_timestamp: {:?}", e);
-            None
-        }
-    }
-}
-
-/// Save last update timestamp to flash storage (stored as u64, 8 bytes)
-fn save_last_update_timestamp(timestamp_secs: u64) {
-    let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    let bytes = timestamp_secs.to_le_bytes();
-    match storage.write_bytes(
-        storage::storage::StorageContents::LastUpdateTimestamp,
-        0,
-        &bytes,
-    ) {
-        Ok(_) => log::info!(
-            "Saved last_update_timestamp to storage: {} seconds",
-            timestamp_secs
-        ),
-        Err(e) => log::error!("Failed to write last_update_timestamp: {:?}", e),
-    }
-}
-
-/// Load display mode from flash storage
-/// Returns DisplayMode, defaulting to LiveUpdates if not set or invalid
-fn load_display_mode() -> DisplayMode {
-    let mut storage_buf = [0u8; 4];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    match storage.read(storage::storage::StorageContents::DisplayMode) {
-        Ok(data) => match DisplayMode::from_byte(data[0]) {
-            Some(mode) => {
-                log::info!("Loaded display mode: {:?}", mode);
-                mode
-            }
-            None => {
-                // 0xFF (uninitialized) or invalid value
-                log::info!("No saved display mode, defaulting to LiveUpdates");
-                DisplayMode::LiveUpdates
-            }
-        },
-        Err(e) => {
-            log::error!("Failed to read display mode: {:?}", e);
-            DisplayMode::LiveUpdates
-        }
-    }
-}
-
-/// Set and persist display mode to flash storage
-/// Returns the mode for assignment: `display_mode = set_display_mode(DisplayMode::CustomText);`
-fn set_display_mode(mode: DisplayMode) -> DisplayMode {
-    let mut storage_buf = [0u8; 4];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
-
-    match storage.write_bytes(
-        storage::storage::StorageContents::DisplayMode,
-        0,
-        &[mode.as_byte()],
-    ) {
-        Ok(_) => log::info!("Saved display mode: {:?}", mode),
-        Err(e) => log::error!("Failed to write display mode: {:?}", e),
-    }
-
-    mode
 }
 
 /// Process a raw binary chunk from MQTT payload

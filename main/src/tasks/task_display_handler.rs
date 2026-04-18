@@ -1,6 +1,6 @@
 //! Display handler task for rate-limited display updates
 
-use crate::{spi::SpiV2, tasks::MatchSliceLengths};
+use crate::{nvs, spi::SpiV2, tasks::MatchSliceLengths};
 use display::{Display, EPD417, EPD417_SIZE};
 use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
@@ -200,9 +200,12 @@ pub fn queue_text_display(
         return;
     }
 
-    // Try to send, drop oldest message if channel is full
-    if channel.try_send(DisplayMessage::Text).is_err() {
-        log::warn!("Display channel full, message may be dropped");
+    // Queuing any non-WiFi-status paint means the disconnect screen (if it
+    // was the last thing rendered) is about to be replaced — clear the flag
+    // so a future reconnect doesn't re-paint "WiFi Connected" over this.
+    match channel.try_send(DisplayMessage::Text) {
+        Ok(_) => nvs::clear_wifi_error_flag_if_set(),
+        Err(_) => log::warn!("Display channel full, message may be dropped"),
     }
 }
 
@@ -222,9 +225,9 @@ pub fn queue_qr_display(
         return;
     }
 
-    // Try to send, drop oldest message if channel is full
-    if channel.try_send(DisplayMessage::QRCode).is_err() {
-        log::warn!("Display channel full, message may be dropped");
+    match channel.try_send(DisplayMessage::QRCode) {
+        Ok(_) => nvs::clear_wifi_error_flag_if_set(),
+        Err(_) => log::warn!("Display channel full, message may be dropped"),
     }
 }
 
@@ -288,11 +291,15 @@ pub fn reset_display_buffer() {
 pub fn queue_frame_ready(
     channel: &'static Channel<NoopRawMutex, DisplayMessage, DISPLAY_CHANNEL_SIZE>,
 ) -> bool {
-    if channel.try_send(DisplayMessage::RawBinary).is_err() {
-        log::warn!("Display channel full, frame may be dropped");
-        false
-    } else {
-        true
+    match channel.try_send(DisplayMessage::RawBinary) {
+        Ok(_) => {
+            nvs::clear_wifi_error_flag_if_set();
+            true
+        }
+        Err(_) => {
+            log::warn!("Display channel full, frame may be dropped");
+            false
+        }
     }
 }
 
