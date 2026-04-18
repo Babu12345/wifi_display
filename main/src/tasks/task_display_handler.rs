@@ -454,12 +454,12 @@ async fn display_qr_code(
 
 /// Update the e-ink display with text and a QR code side by side.
 ///
-/// Uses the shared `frame` buffer as scratch for QR generation — qrcodegen
-/// needs two writable buffers (~454 bytes each for version 10), and we carve
-/// them out of `frame` instead of pushing two `[u8; QR_SCRATCH_LEN]` arrays
-/// onto the sync stack. That stack burst was the difference between this
-/// function and `display_qr_code` that triggered the esp-wifi crashes.
-/// Capped at QR version 10 (57×57 modules) which fits any reasonable URL.
+/// `url::Qr::render_to_buffer_centered` encodes + draws the QR in a single
+/// pass using `frame` itself as scratch. A prior design called
+/// `Qr::size()` then `Qr::render_to_buffer` separately — `size()` still uses
+/// stack scratch, and that burst, on top of the text render, was enough to
+/// clobber esp-wifi state. The single-call API keeps QR generation to one
+/// encoding that never touches the stack.
 async fn display_text_with_qr(
     display: &mut Display<
         'static,
@@ -474,8 +474,6 @@ async fn display_text_with_qr(
     url: &str,
     frame: &mut [u8; DISPLAY_SIZE_IN_BYTES],
 ) -> Result<(), &'static str> {
-    use url::qrcodegen_no_heap::{QrCode, QrCodeEcc, Version};
-
     log::info!("Updating display with text and QR code");
 
     // Layout: text on left, QR on right. Display is 400x300.
@@ -483,85 +481,25 @@ async fn display_text_with_qr(
     const QR_AREA_WIDTH: u32 = 180;
     const QR_MAX_SIZE: u32 = 160;
 
-    // Cap at QR version 10. Its scratch is small enough to sit in a single
-    // contiguous slice of `frame`, and its 57 modules at scale ≥2 comfortably
-    // fill the right-hand column.
-    const QR_VERSION_MAX: Version = Version::new(10);
-    const QR_SCRATCH_LEN: usize = QR_VERSION_MAX.buffer_len();
-
-    // Turn the display on BEFORE rendering. Matches display_text /
-    // display_qr_code, and the .await yields so any tail work queued by
-    // task_wifi_runner's stop path can drain first.
+    // display.on() first — matches display_text / display_qr_code, and the
+    // .await yields so tail work from task_wifi_runner drains before the
+    // synchronous render burst.
     let mut display_on = display
         .on(false)
         .await
         .map_err(|_| "Failed to turn on display")?;
 
-    // Split `frame` into two QR scratch regions and leave the rest as the
-    // drawable region. `encode_text` borrows both scratch slices until the
-    // `QrCode` is dropped, so we extract (size, module bitmap) inside this
-    // block, then release the borrow and use the full `frame` for drawing.
-    //
-    // Module bitmap cache: version 10 = 57×57 = 3249 bits = 407 bytes packed.
-    // Allocated in the outer scope so it survives past the scratch borrow.
-    const MAX_MODULES: usize = 57;
-    const MODULE_BYTES: usize = (MAX_MODULES * MAX_MODULES + 7) / 8;
-    let mut modules = [0u8; MODULE_BYTES];
-    let qr_size: u32 = {
-        let (temp, rest) = frame.split_at_mut(QR_SCRATCH_LEN);
-        let (out, _) = rest.split_at_mut(QR_SCRATCH_LEN);
-        let qr = QrCode::encode_text(
-            url,
-            temp,
-            out,
-            QrCodeEcc::Medium,
-            Version::MIN,
-            QR_VERSION_MAX,
-            None,
-            true,
+    // Encode + draw QR in one pass, centered in the right-hand column.
+    url::Qr::new(url)
+        .render_to_buffer_centered::<DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_SIZE_IN_BYTES>(
+            frame,
+            TEXT_WIDTH,
+            0,
+            QR_AREA_WIDTH,
+            DISPLAY_HEIGHT,
+            QR_MAX_SIZE,
         )
-        .map_err(|_| "QR gen failed (url too long for version 10)")?;
-        let size = qr.size() as u32;
-        for y in 0..size {
-            for x in 0..size {
-                if qr.get_module(x as i32, y as i32) {
-                    let bit = (y * size + x) as usize;
-                    modules[bit / 8] |= 1 << (7 - (bit % 8));
-                }
-            }
-        }
-        size
-    };
-    // QrCode dropped, scratch borrow released — `frame` is free to use.
-
-    let max_scale = QR_MAX_SIZE / qr_size;
-    let scale = if max_scale < 1 { 1 } else { max_scale };
-    let qr_pixel_size = qr_size * scale;
-    let qr_x = TEXT_WIDTH + ((QR_AREA_WIDTH - qr_pixel_size) / 2);
-    let qr_y = (DISPLAY_HEIGHT - qr_pixel_size) / 2;
-
-    // Clear the whole frame (drops any leftover scratch bytes) and draw QR.
-    frame.fill(0x00);
-    for y in 0..qr_size {
-        for x in 0..qr_size {
-            let bit = (y * qr_size + x) as usize;
-            if modules[bit / 8] & (1 << (7 - (bit % 8))) != 0 {
-                for dy in 0..scale {
-                    for dx in 0..scale {
-                        let px = qr_x + x * scale + dx;
-                        let py = qr_y + y * scale + dy;
-                        if px < DISPLAY_WIDTH && py < DISPLAY_HEIGHT {
-                            let frame_bit = (py * DISPLAY_WIDTH + px) as usize;
-                            let byte_idx = frame_bit / 8;
-                            if byte_idx < DISPLAY_SIZE_IN_BYTES {
-                                frame[byte_idx] |= 1 << (7 - (frame_bit % 8));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+        .ok_or("QR gen failed (url too long for version 10)")?;
 
     // Overlay text on the left side (no clear).
     Text::new(text)
