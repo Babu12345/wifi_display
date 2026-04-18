@@ -22,6 +22,7 @@ fn main() {
     let required = [
         "GET_STARTED_URL",
         "SUPPORT_URL",
+        "APP_STORE_URL",
         "MQTT_BROKER",
         "MQTT_PORT",
         "CA_CERT_PATH",

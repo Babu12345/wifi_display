@@ -91,22 +91,37 @@ Features:\n\
 - And more!\n\n\
 Scan QR to start";
 
-/// Get started URL displayed as QR code when WiFi connects
+/// "Get started" landing page URL — shown on WiFi connect.
 const GET_STARTED_URL: &str = env!("GET_STARTED_URL");
 
-/// Support URL displayed as QR code when WiFi disconnects
+/// Support/help website URL — scanning opens it in the phone's browser.
 const SUPPORT_URL: &str = env!("SUPPORT_URL");
 
-/// Shown while a firmware update is downloading
-const OTA_UPDATING_MSG: &str = "Updating...\n\nKeep WiFi connected.";
+/// App Store URL for Paper Portrait Connect — scanning opens the listing
+/// (installs if new, launches App Store if already installed).
+const APP_STORE_URL: &str = env!("APP_STORE_URL");
 
-/// Shown briefly after a successful OTA boot, before normal content resumes
+// Note: these are paired with a QR to GET_STARTED_URL / SUPPORT_URL on the
+// right half of the display. Text rendering gets a 210 px column at
+// Large10x20 (~21 chars/line), so keep lines short and rely on manual \n's
+// rather than auto-wrap to avoid mid-word breaks.
+
+/// Shown while firmware is downloading. Paired with the App Store QR so
+/// users can install/check out the app while they wait.
+const OTA_UPDATING_MSG: &str = "Installing\nupdate...\n\n\
+Keep WiFi on\nand don't unplug.\n\n\
+Scan to get\nthe iPhone app.";
+
+/// Shown after a successful OTA boot. Paired with the App Store QR.
 const OTA_COMPLETE_MSG: &str = "All set!\n\n\
-Your next display will appear soon, or open the app to refresh now.";
+Your display\nwill refresh\nshortly.\n\n\
+Scan to get\nthe iPhone app.";
 
-/// Shown if the OTA download or verify fails before reboot
-const OTA_FAILED_MSG: &str = "Update didn't finish.\n\n\
-Your device is fine. Your next display will appear soon, or open the app to refresh now.";
+/// Shown if the OTA download or verify fails before reboot. Paired with
+/// the help website QR.
+const OTA_FAILED_MSG: &str = "Update didn't\nfinish.\n\n\
+Your device is\nstill fine.\n\n\
+Scan to visit\nour help site.";
 
 const MQTT_BROKER: &str = env!("MQTT_BROKER");
 /// MQTT broker as a CStr for TLS servername (requires null terminator)
@@ -561,7 +576,7 @@ async fn task_wifi_runner_inner(
                     // Show the user that something is happening — e-ink takes
                     // a few seconds to render and we're about to do a long
                     // download, so it'll be on screen well before reboot.
-                    queue_text_display(display_channel, OTA_UPDATING_MSG);
+                    queue_text_with_qr_display(display_channel, OTA_UPDATING_MSG, APP_STORE_URL);
 
                     let pending = PENDING_OTA.lock().await.take();
                     if let Some((buf, n)) = pending {
@@ -590,7 +605,11 @@ async fn task_wifi_runner_inner(
                             // Update the user before reboot. The message will
                             // persist on the e-ink until the old firmware
                             // reconnects and pushes new content.
-                            queue_text_display(display_channel, OTA_FAILED_MSG);
+                            queue_text_with_qr_display(
+                                display_channel,
+                                OTA_FAILED_MSG,
+                                SUPPORT_URL,
+                            );
                             // Give the display task time to render the failure
                             // message before we reset and lose it.
                             Timer::after(Duration::from_secs(5)).await;
@@ -859,7 +878,7 @@ async fn handle_live_mqtt_updates<'a>(
     // broken in the new firmware, mark_valid is never called and the
     // bootloader rolls back on the next reset.
     if is_ota_boot() {
-        queue_text_display(display_channel, OTA_COMPLETE_MSG);
+        queue_text_with_qr_display(display_channel, OTA_COMPLETE_MSG, APP_STORE_URL);
         mark_ota_valid();
     }
 
