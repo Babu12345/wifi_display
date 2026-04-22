@@ -59,7 +59,7 @@ From the app, select the registered device and choose a content type with a shor
 
 This keeps the device in a continuous cycle of: WiFi receive (MQTT) -> CPU decode -> eInk display refresh.
 
-Further instructions are in the user manual: https://babu12345.github.io/portrait_v2_ios/manual/
+Further instructions are in the user manual: https://www.paperportraitdisplay.com/manual
 
 ### Maximum Power Draw Operating Conditions
 

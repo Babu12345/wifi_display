@@ -317,8 +317,8 @@ Ensure `.env` has these keys (see `.env.example`):
 
 ```bash
 OTA_CA_CERT_PATH=src/certificates/ota_ca.pem
-FIRMWARE_HOST_DIR=/path/to/website/docs/firmware
-FIRMWARE_BASE_URL=https://<user>.github.io/<repo>/firmware
+FIRMWARE_HOST_DIR=/path/to/portrait_v2/web/public/firmware
+FIRMWARE_BASE_URL=https://www.paperportraitdisplay.com/firmware
 ```
 
 Add the OTA permissions to your AWS IoT policy (Subscribe + Receive on `*/root/ota`). After updating the policy, power-cycle the device so it reconnects with the new permissions.
@@ -345,13 +345,13 @@ cd main
 ./publish-firmware.sh 1.0.1 --secure   # secure boot signed
 
 # Commit + push the binary (the script prints these commands):
-cd "$FIRMWARE_HOST_DIR/../.."
-git add docs/firmware/1.0.1/
+cd "$FIRMWARE_HOST_DIR/../../.."
+git add web/public/firmware/1.0.1/
 git commit -m "Publish firmware v1.0.1"
 git push
 
-# Wait ~1 min for GitHub Pages to deploy, verify:
-curl -I https://<user>.github.io/<repo>/firmware/1.0.1/firmware.bin
+# Wait ~1 min for AWS Amplify Hosting to deploy, verify:
+curl -I https://www.paperportraitdisplay.com/firmware/1.0.1/firmware.bin
 # → HTTP/2 200
 ```
 

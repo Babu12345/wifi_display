@@ -197,7 +197,9 @@ enum MqttSessionError {
     ReceiveError,
 }
 
-/// CA cert for OTA firmware downloads (ISRG Root X1 for GitHub Pages)
+/// CA cert for OTA firmware downloads (Amazon Root CA 1 + Starfield G2,
+/// covers ACM-issued certificates for www.paperportraitdisplay.com on
+/// AWS Amplify Hosting).
 const OTA_CA_CERT: &str = concat!(
     include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

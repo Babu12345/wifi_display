@@ -119,8 +119,17 @@ echo ">>> MQTT trigger payload (publish to {client_id}/root/ota):"
 echo ""
 echo "$TRIGGER_JSON"
 echo ""
+# Resolve the paper-portrait repo root from the firmware dir.
+# FIRMWARE_HOST_DIR is expected to live at <repo>/web/public/firmware, so the
+# repo root is three levels up.
+REPO_ROOT="$(cd "${WEBSITE_FIRMWARE_DIR}/../../.." && pwd)"
+REL_FIRMWARE="$(python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$WEBSITE_FIRMWARE_DIR" "$REPO_ROOT")"
+
 echo ">>> Next steps:"
-echo "    cd ${WEBSITE_FIRMWARE_DIR%/firmware}/.."
-echo "    git add docs/firmware/${VERSION}/ docs/firmware/latest.json"
+echo "    cd ${REPO_ROOT}"
+echo "    git add ${REL_FIRMWARE}/${VERSION}/ ${REL_FIRMWARE}/latest.json"
 echo "    git commit -m 'Publish firmware v${VERSION}'"
 echo "    git push"
+echo ""
+echo "    # AWS Amplify Hosting will redeploy the web/ app on push and serve"
+echo "    # the new binary at: ${URL}"
