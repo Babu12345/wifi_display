@@ -34,7 +34,7 @@ pub fn format_registration_response(code: &str) -> heapless::String<64> {
     let mut response = heapless::String::<64>::new();
     let _ = core::fmt::write(
         &mut response,
-        format_args!("{}{}{}", REGISTRATION_PREFIX, code, REGISTRATION_SUFFIX),
+        format_args!("{REGISTRATION_PREFIX}{code}{REGISTRATION_SUFFIX}",),
     );
     response
 }
