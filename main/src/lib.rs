@@ -1,4 +1,4 @@
-//! Shared and compartmentalized functions for the async_main
+//! Shared and compartmentalized functions for the main hardware entrypoint
 
 #![no_std]
 #![deny(missing_docs)]
