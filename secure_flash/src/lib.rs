@@ -165,6 +165,7 @@ pub(crate) fn check_bounds(
 /// Used by hardware backends whose mapping unit is larger than the regions
 /// callers care about (e.g. ESP32-C3's MMU operates in 64 KiB pages but
 /// otadata lives inside one of those pages).
+#[cfg(any(feature = "esp32c3", test))]
 pub(crate) fn page_align_region(offset: u32, size: u32, page: u32) -> (u32, u32) {
     debug_assert!(page.is_power_of_two());
     let mask = page - 1;
