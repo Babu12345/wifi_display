@@ -29,6 +29,30 @@ const ROM_WRITE: usize = 0x4000012c;
 const ROM_WRITE_ENCRYPTED: usize = 0x40000110;
 const ROM_ERASE: usize = 0x40000128;
 const ROM_UNLOCK: usize = 0x40000140;
+const ROM_CACHE_INVALIDATE_ADDR: usize = 0x400004D4;
+const ROM_CACHE_DBUS_MMU_SET: usize = 0x40000564;
+
+// Cache MMU mapping. The flash encryption hardware on ESP32-C3 only decrypts
+// when reads go through the cache (memory-mapped at 0x3C000000+ on DBus). The
+// bootloader maps the running app's IROM/DROM but not arbitrary flash regions
+// — we have to set up our own mappings to read otadata and the inactive OTA
+// partition decrypted, which the OTA library needs for `is_pending_verification`
+// and `ota_flush(verify=true)`.
+const MMU_PAGE_SIZE: u32 = 0x10000; // 64 KB
+const DBUS_VBASE: u32 = 0x3C000000;
+// Entries 0x40-0x7E. App typically uses 0x00-0x14 (IROM) and 0x0F-0x14 (DROM),
+// so 0x40 onwards is well clear.
+const MMU_ENTRY_OTADATA: u32 = 0x40; // covers flash page 0x10000
+const MMU_ENTRY_OTA0_BASE: u32 = 0x41; // covers flash 0x20000+ (23 pages)
+const MMU_ENTRY_OTA1_BASE: u32 = 0x58; // covers flash 0x190000+ (23 pages)
+const OTA_PARTITION_PAGES: u32 = 23;
+// Hardcoded partition layout, must match `partitions_secure.csv` and
+// `secure_partition_info()` in `ota_flash.rs`.
+const OTA_0_BASE: u32 = 0x20000;
+const OTA_1_BASE: u32 = 0x190000;
+const OTA_PARTITION_SIZE: u32 = 0x170000;
+const OTADATA_BASE: u32 = 0x18000;
+const OTADATA_SIZE: u32 = 0x2000;
 
 #[inline(never)]
 #[unsafe(link_section = ".rwtext")]
@@ -73,6 +97,96 @@ unsafe fn rom_unlock() -> i32 {
     unsafe {
         let f: unsafe extern "C" fn() -> i32 = core::mem::transmute(ROM_UNLOCK);
         f()
+    }
+}
+
+#[inline(never)]
+#[unsafe(link_section = ".rwtext")]
+unsafe fn rom_cache_invalidate_addr(vaddr: u32, size: u32) {
+    unsafe {
+        let f: unsafe extern "C" fn(u32, u32) =
+            core::mem::transmute(ROM_CACHE_INVALIDATE_ADDR);
+        f(vaddr, size);
+    }
+}
+
+/// Map a contiguous flash region into the DBus virtual address space.
+///
+/// Uses the ROM helper rather than writing MMU entries directly. The ROM
+/// function configures the entries with the correct bus-mode bits so the
+/// cache controller actually performs flash decryption on subsequent reads;
+/// raw register writes leave entries in a state where reads return raw
+/// ciphertext.
+///
+/// Signature:
+///   int Cache_Dbus_MMU_Set(uint32_t mode, uint32_t vaddr, uint32_t paddr,
+///                          uint32_t psize_kb, uint32_t num, uint32_t fixed);
+/// `mode = 0` means MMU_ACCESS_FLASH (the only mode used in ESP-IDF for
+/// regular flash reads). `psize_kb = 64` is the page size. `fixed = 0` means
+/// the entry can be replaced later.
+fn map_flash_region(entry_id_base: u32, flash_addr: u32, num_pages: u32) {
+    let vaddr = DBUS_VBASE + entry_id_base * MMU_PAGE_SIZE;
+    unsafe {
+        let f: unsafe extern "C" fn(u32, u32, u32, u32, u32, u32) -> i32 =
+            core::mem::transmute(ROM_CACHE_DBUS_MMU_SET);
+        let _ = f(0, vaddr, flash_addr, 64, num_pages, 0);
+        rom_cache_invalidate_addr(vaddr, num_pages * MMU_PAGE_SIZE);
+    }
+}
+
+/// Set up the MMU mappings for otadata, ota_0, and ota_1 in DBus virtual
+/// address space. Idempotent — safe to call multiple times. After this, reads
+/// at the corresponding `dbus_vaddr_for_*` addresses go through the cache and
+/// are decrypted by the flash encryption hardware.
+fn ensure_mappings() {
+    // otadata page (covers flash 0x10000-0x1FFFF, includes partition table at
+    // 0x10000 and otadata at 0x18000)
+    map_flash_region(MMU_ENTRY_OTADATA, 0x10000, 1);
+    // OTA partitions
+    map_flash_region(MMU_ENTRY_OTA0_BASE, OTA_0_BASE, OTA_PARTITION_PAGES);
+    map_flash_region(MMU_ENTRY_OTA1_BASE, OTA_1_BASE, OTA_PARTITION_PAGES);
+}
+
+/// Convert a flash physical offset into the DBus virtual address it's mapped
+/// to (if it falls in a region we've mapped). Returns `None` for offsets
+/// outside the OTA-related regions, in which case the caller falls back to
+/// plain SPI reads (which return ciphertext but are fine for non-encrypted
+/// regions or when the caller already deals in ciphertext).
+fn dbus_vaddr_for_flash(flash_offset: u32) -> Option<u32> {
+    if (OTADATA_BASE..OTADATA_BASE + OTADATA_SIZE).contains(&flash_offset) {
+        // otadata page covers flash 0x10000+, so flash 0x18000 is at offset
+        // 0x8000 within the mapped page.
+        let page_offset = flash_offset - 0x10000;
+        Some(DBUS_VBASE + MMU_ENTRY_OTADATA * MMU_PAGE_SIZE + page_offset)
+    } else if (OTA_0_BASE..OTA_0_BASE + OTA_PARTITION_SIZE).contains(&flash_offset) {
+        let off = flash_offset - OTA_0_BASE;
+        Some(DBUS_VBASE + MMU_ENTRY_OTA0_BASE * MMU_PAGE_SIZE + off)
+    } else if (OTA_1_BASE..OTA_1_BASE + OTA_PARTITION_SIZE).contains(&flash_offset) {
+        let off = flash_offset - OTA_1_BASE;
+        Some(DBUS_VBASE + MMU_ENTRY_OTA1_BASE * MMU_PAGE_SIZE + off)
+    } else {
+        None
+    }
+}
+
+/// Read decrypted bytes via memory-mapped flash. The MMU mapping must already
+/// be in place (call `ensure_mappings()` first). Cache is invalidated for the
+/// read range to avoid returning data stale from before the most recent write.
+fn mapped_read(flash_offset: u32, buf: &mut [u8]) {
+    if let Some(vaddr) = dbus_vaddr_for_flash(flash_offset) {
+        // Cache may hold stale data from before the most recent encrypted
+        // write to this region — invalidate before reading. Round to a page
+        // boundary because `Cache_Invalidate_Addr` operates per-page.
+        let page_aligned = vaddr & !(MMU_PAGE_SIZE - 1);
+        let span = ((vaddr + buf.len() as u32 + MMU_PAGE_SIZE - 1)
+            & !(MMU_PAGE_SIZE - 1))
+            - page_aligned;
+        unsafe { rom_cache_invalidate_addr(page_aligned, span) };
+        let src = unsafe { core::slice::from_raw_parts(vaddr as *const u8, buf.len()) };
+        buf.copy_from_slice(src);
+    } else {
+        // Outside our mapped regions — fall back to plain SPI ROM read.
+        let _ = plain_read(flash_offset, buf);
     }
 }
 
@@ -219,6 +333,10 @@ pub struct EncryptedOtaStorage {
 
 impl EncryptedOtaStorage {
     pub fn new() -> Self {
+        // Set up cache MMU mappings for otadata + both OTA partitions on first
+        // construction so reads through `mapped_read` return decrypted data.
+        // `map_flash_region` is idempotent, so repeated calls are safe.
+        ensure_mappings();
         Self {
             unlocked: false,
             pending: None,
@@ -262,6 +380,13 @@ impl EncryptedOtaStorage {
                 log::error!("write_encrypted({:#x}) failed: {}", p.addr, rc);
                 return Err(FlashStorageError::Other(rc));
             }
+
+            // Invalidate cache for this block's mapped vaddr so a subsequent
+            // verify-read sees the fresh ciphertext we just wrote.
+            if let Some(vaddr) = dbus_vaddr_for_flash(p.addr) {
+                let page_aligned = vaddr & !(MMU_PAGE_SIZE - 1);
+                unsafe { rom_cache_invalidate_addr(page_aligned, MMU_PAGE_SIZE) };
+            }
         }
         Ok(())
     }
@@ -300,14 +425,18 @@ impl ReadStorage for EncryptedOtaStorage {
     type Error = FlashStorageError;
 
     fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), Self::Error> {
-        // Returns ciphertext — fine for the OTA flow because we skip the
-        // post-write CRC verify; otadata reads will return ciphertext too
-        // but the OTA library only uses these to compute a sequence number,
-        // and CRC validation in `EspOtaSelectEntry::check_crc` zeroes the seq
-        // when the CRC doesn't match. Both slots end up with seq=0, the
-        // library increments to 1/2 to target the right partition, and we
-        // erase the slot before writing so the new entry is well-formed.
-        plain_read(offset, bytes)
+        check_bounds(offset, bytes.len())?;
+        // For otadata and OTA partition addresses, route through the cache
+        // MMU so reads return decrypted plaintext. This is what makes
+        // `is_pending_verification` (read otadata state) and
+        // `ota_flush(verify=true)` (CRC of newly written partition) work.
+        // Outside those ranges, fall back to plain SPI reads.
+        if dbus_vaddr_for_flash(offset).is_some() {
+            mapped_read(offset, bytes);
+            Ok(())
+        } else {
+            plain_read(offset, bytes)
+        }
     }
 
     fn capacity(&self) -> usize {
@@ -335,18 +464,34 @@ impl Storage for EncryptedOtaStorage {
                 }
             }
 
+            let to_write = (ENC_BLOCK as usize - off_in_block).min(bytes.len());
+
             // Start a fresh buffer for this block if we don't already have one.
-            // Initialized to 0xFF — this is correct because our caller (the OTA
-            // library, plus our pre-erase of otadata) ensures the destination
-            // sector was erased before writing.
+            //
+            // For a sub-block write (`to_write < ENC_BLOCK`) we have to preserve
+            // the bytes we aren't touching — otherwise our flush_pending erase +
+            // encrypt-write would zero them out. Read the existing decrypted
+            // plaintext via the cache MMU mapping (if the address falls inside
+            // one we've mapped); this is what makes `set_ota_state` (the
+            // 4-byte mark-valid write) work without wiping the rest of the
+            // otadata struct.
+            //
+            // For a full-block write we don't need to read anything — the
+            // caller is overwriting all 32 bytes. Initialize to 0xFF as a
+            // defensive default; flush_pending will erase the sector before
+            // writing anyway.
             if self.pending.is_none() {
+                let mut data = [0xFF; ENC_BLOCK as usize];
+                let is_partial = off_in_block != 0 || to_write < ENC_BLOCK as usize;
+                if is_partial && dbus_vaddr_for_flash(block_addr).is_some() {
+                    mapped_read(block_addr, &mut data);
+                }
                 self.pending = Some(PendingBlock {
                     addr: block_addr,
-                    data: [0xFF; ENC_BLOCK as usize],
+                    data,
                 });
             }
 
-            let to_write = (ENC_BLOCK as usize - off_in_block).min(bytes.len());
             let pending = self.pending.as_mut().unwrap();
             pending.data[off_in_block..off_in_block + to_write]
                 .copy_from_slice(&bytes[..to_write]);

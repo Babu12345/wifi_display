@@ -3,11 +3,11 @@
 //! Wraps `esp-hal-ota` to provide partition discovery, chunk writing,
 //! CRC verification, and boot target management.
 
+#[cfg(not(feature = "secure-boot"))]
+use esp_hal_ota::OtaConfiguratuion;
 #[cfg(feature = "secure-boot")]
 use esp_hal_ota::PartitionInfo;
 use esp_hal_ota::{Ota, OtaImgState};
-#[cfg(not(feature = "secure-boot"))]
-use esp_hal_ota::OtaConfiguratuion;
 use ota::{FlashWriter, OtaError};
 
 #[cfg(feature = "secure-boot")]
@@ -82,17 +82,9 @@ impl FlashWriter for EspFlashWriter {
     }
 
     fn finalize(&mut self) -> Result<(), OtaError> {
-        // verify=false on secure-boot builds: we can't read decrypted bytes
-        // through the plain SPI ROM path to compute a CRC, so skip the
-        // post-write verify. The bootloader still verifies the secure-boot
-        // signature on next boot, so a corrupted write would fail to boot
-        // anyway.
-        // rollback=false on secure-boot builds: the rollback flag relies on
-        // reading otadata back as plaintext, which we also can't do.
-        #[cfg(feature = "secure-boot")]
-        let (verify, rollback) = (false, false);
-        #[cfg(not(feature = "secure-boot"))]
-        let (verify, rollback) = (true, true);
+        // Secure-boot builds: verify and rollback both work because
+        // `EncryptedOtaStorage::read` routes reads of otadata and OTA
+        // partitions through cache-MMU mappings that decrypt on the fly.
 
         // On secure-boot builds, esp-hal-ota writes the new otadata entry
         // without erasing first. Encrypted writes need the destination block
@@ -103,13 +95,16 @@ impl FlashWriter for EspFlashWriter {
         #[cfg(feature = "secure-boot")]
         {
             let (offset, size) = self.ota.otadata_region();
-            self.ota.flash_mut().erase_region(offset, size).map_err(|e| {
-                log::error!("Failed to erase otadata: {:?}", e);
-                OtaError::FinalizeError
-            })?;
+            self.ota
+                .flash_mut()
+                .erase_region(offset, size)
+                .map_err(|e| {
+                    log::error!("Failed to erase otadata: {:?}", e);
+                    OtaError::FinalizeError
+                })?;
         }
 
-        self.ota.ota_flush(verify, rollback).map_err(|e| {
+        self.ota.ota_flush(true, true).map_err(|e| {
             log::error!("OTA finalize failed: {:?}", e);
             OtaError::FinalizeError
         })?;
@@ -128,23 +123,41 @@ impl FlashWriter for EspFlashWriter {
     }
 
     fn is_pending_verification(&self) -> bool {
-        // We need a mutable reference for get_ota_image_state, but the trait
-        // requires &self. Use a conservative approach: check if the current
-        // partition was recently written (state is New).
-        // This is called once at boot before any mutation, so it's safe to
-        // do a fresh read.
+        // With CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y in the bootloader, an
+        // app that's still on its first boot from a freshly-OTA'd partition
+        // sees state `EspOtaImgPendingVerify` (the bootloader transitions
+        // from `New` before handing off). Match either to be safe.
         let flash = OtaStorage::new();
         let mut ota = match new_ota(flash) {
             Ok(ota) => ota,
             Err(_) => return false,
         };
-        matches!(ota.get_ota_image_state(), Ok(OtaImgState::EspOtaImgNew))
+        matches!(
+            ota.get_ota_image_state(),
+            Ok(OtaImgState::EspOtaImgNew) | Ok(OtaImgState::EspOtaImgPendingVerify)
+        )
     }
 
     fn mark_valid(&mut self) -> Result<(), OtaError> {
         self.ota.ota_mark_app_valid().map_err(|e| {
             log::error!("OTA mark valid failed: {:?}", e);
             OtaError::FinalizeError
-        })
+        })?;
+
+        // ota_mark_app_valid writes 4 bytes (the state field) to a 32-byte
+        // otadata block. On secure-boot builds our `EncryptedOtaStorage` only
+        // emits an encrypted-write when a block fills or moves on, so the
+        // partial write is still in the per-block buffer. Flush it here so
+        // the new "Valid" state actually reaches flash before the function
+        // returns.
+        #[cfg(feature = "secure-boot")]
+        {
+            self.ota.flash_mut().flush().map_err(|e| {
+                log::error!("OTA mark valid flush failed: {:?}", e);
+                OtaError::FinalizeError
+            })?;
+        }
+
+        Ok(())
     }
 }

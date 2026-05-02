@@ -19,12 +19,12 @@ use embassy_time::{Duration, Timer};
 use esp_wifi::wifi::{WifiDevice, WifiStaDevice};
 use rand_core::CryptoRngCore;
 
+use crate::AppFlashStorage as FlashStorage;
 use core::cell::RefCell;
 use esp_hal::peripherals;
 use esp_hal::reset::reset_reason;
 use esp_hal::rng::Trng;
 use esp_hal::rtc_cntl::SocResetReason;
-use crate::AppFlashStorage as FlashStorage;
 use esp_wifi::wifi::{ClientConfiguration, Configuration, WifiController};
 use heapless::String;
 use nfc::MAX_NFCDATA_SIZE;
