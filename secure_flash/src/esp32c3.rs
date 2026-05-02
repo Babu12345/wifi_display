@@ -12,7 +12,7 @@
 //! `map_decrypt_region` is idempotent and `unlock` is harmless if already
 //! unlocked.
 
-use crate::{FlashError, FlashHardware};
+use crate::{page_align_region, FlashError, FlashHardware};
 
 // === ROM function addresses ===
 const ROM_READ: usize = 0x40000130;
@@ -266,25 +266,33 @@ impl FlashHardware for Esp32C3 {
         flash_offset: u32,
         size: u32,
     ) -> Result<(), FlashError> {
-        if (flash_offset % MMU_PAGE_SIZE) != 0 {
-            return Err(FlashError::NotAligned);
-        }
-        // Idempotent: if we've already mapped this exact (offset, size),
-        // bail out without consuming more entries.
+        // Page-align the start and expand the size to cover any partial pages
+        // at either end. The MMU only operates in 64 KiB units, so the
+        // physical mapping has to start on a page boundary — but callers
+        // shouldn't have to know that. (For example, otadata at flash
+        // 0x18000 size 0x2000 lives inside the page 0x10000-0x1FFFF.)
+        let (aligned_offset, aligned_size) =
+            page_align_region(flash_offset, size, MMU_PAGE_SIZE);
+
+        // Idempotent: if we've already mapped a region that fully covers the
+        // expanded request, do nothing.
         for m in self.mappings.iter().take(self.mapping_count).flatten() {
-            if m.flash_offset == flash_offset && m.size == size {
+            if aligned_offset >= m.flash_offset
+                && aligned_offset + aligned_size <= m.flash_offset + m.size
+            {
                 return Ok(());
             }
         }
         if self.mapping_count >= MAX_MAPPINGS {
             return Err(FlashError::OutOfBounds);
         }
-        let num_pages = size.div_ceil(MMU_PAGE_SIZE);
+
+        let num_pages = aligned_size / MMU_PAGE_SIZE;
         let entry_base = self.next_mmu_entry;
         let vaddr_base = DBUS_VBASE + entry_base * MMU_PAGE_SIZE;
         let rc = unsafe {
             // mode=0 (MMU_ACCESS_FLASH), psize_kb=64, fixed=0
-            rom_cache_dbus_mmu_set(0, vaddr_base, flash_offset, 64, num_pages, 0)
+            rom_cache_dbus_mmu_set(0, vaddr_base, aligned_offset, 64, num_pages, 0)
         };
         if rc != 0 {
             return Err(FlashError::Hardware(rc));
@@ -292,8 +300,8 @@ impl FlashHardware for Esp32C3 {
         unsafe { rom_cache_invalidate_addr(vaddr_base, num_pages * MMU_PAGE_SIZE) };
 
         self.mappings[self.mapping_count] = Some(Mapping {
-            flash_offset,
-            size,
+            flash_offset: aligned_offset,
+            size: aligned_size,
             vaddr_base,
         });
         self.mapping_count += 1;

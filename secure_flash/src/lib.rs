@@ -158,3 +158,56 @@ pub(crate) fn check_bounds(
     }
     Ok(())
 }
+
+/// Expand a `(offset, size)` flash region to the smallest range of whole pages
+/// that fully contains it. `page` must be a power of two.
+///
+/// Used by hardware backends whose mapping unit is larger than the regions
+/// callers care about (e.g. ESP32-C3's MMU operates in 64 KiB pages but
+/// otadata lives inside one of those pages).
+pub(crate) fn page_align_region(offset: u32, size: u32, page: u32) -> (u32, u32) {
+    debug_assert!(page.is_power_of_two());
+    let mask = page - 1;
+    let aligned_start = offset & !mask;
+    let end = offset.saturating_add(size);
+    let aligned_end = (end + mask) & !mask;
+    (aligned_start, aligned_end - aligned_start)
+}
+
+#[cfg(test)]
+mod align_tests {
+    use super::page_align_region;
+
+    #[test]
+    fn aligned_region_unchanged() {
+        assert_eq!(page_align_region(0x10000, 0x10000, 0x10000), (0x10000, 0x10000));
+        assert_eq!(page_align_region(0x20000, 0x170000, 0x10000), (0x20000, 0x170000));
+    }
+
+    #[test]
+    fn unaligned_start_grows_backwards_to_page() {
+        // otadata at flash 0x18000, size 0x2000 — fits inside 0x10000..0x1FFFF.
+        assert_eq!(
+            page_align_region(0x18000, 0x2000, 0x10000),
+            (0x10000, 0x10000)
+        );
+    }
+
+    #[test]
+    fn region_spanning_page_boundary_grows_to_cover_both() {
+        // 0x18000 + 0x9000 = 0x21000 — runs into the next page, must cover it.
+        assert_eq!(
+            page_align_region(0x18000, 0x9000, 0x10000),
+            (0x10000, 0x20000)
+        );
+    }
+
+    #[test]
+    fn region_smaller_than_page_pads_up_to_one_page() {
+        // 4 KiB sector inside a 64 KiB page → expands to one full page.
+        assert_eq!(
+            page_align_region(0x18000, 0x1000, 0x10000),
+            (0x10000, 0x10000)
+        );
+    }
+}
