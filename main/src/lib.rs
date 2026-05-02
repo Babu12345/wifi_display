@@ -3,9 +3,6 @@
 #![no_std]
 #![deny(missing_docs)]
 
-#[cfg(feature = "secure-boot")]
-#[allow(missing_docs)]
-pub mod encrypted_flash;
 pub mod nvs;
 pub mod ota_flash;
 pub mod ota_http;
@@ -16,11 +13,12 @@ pub mod tasks;
 /// flash encryption enabled, `esp-storage`'s default `FlashStorage` mis-detects
 /// capacity (the encrypted bootloader header byte at offset 0 doesn't decode
 /// to a valid flash size), so every read fails with `OutOfBounds`. The
-/// `PlainFlashStorage` wrapper hardcodes capacity and uses the same plain ROM
-/// SPI calls — fine for NVS/user data because the app reads back the same
-/// plaintext bytes it wrote.
+/// `secure_flash::PlainFlashStorage` wrapper hardcodes capacity via the
+/// hardware backend and uses plain ROM SPI calls — fine for NVS/user data
+/// because the app reads back the same plaintext bytes it wrote.
 #[cfg(feature = "secure-boot")]
-pub type AppFlashStorage = encrypted_flash::PlainFlashStorage;
+pub type AppFlashStorage =
+    secure_flash::PlainFlashStorage<secure_flash::esp32c3::Esp32C3>;
 /// Flash storage type for app-level data (NVS, user data) — dev-mode build
 /// uses `esp-storage`'s default implementation which works correctly when
 /// flash encryption is disabled.

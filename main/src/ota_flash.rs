@@ -13,9 +13,31 @@ use esp_hal_ota::OtaImgState;
 use ota::{FlashWriter, OtaError};
 
 #[cfg(feature = "secure-boot")]
-use crate::encrypted_flash::EncryptedOtaStorage as OtaStorage;
+type OtaStorage = secure_flash::EncryptedOtaStorage<secure_flash::esp32c3::Esp32C3>;
 #[cfg(not(feature = "secure-boot"))]
 use esp_storage::FlashStorage as OtaStorage;
+
+// Regions whose bytes the OTA flow needs to read decrypted: otadata + both
+// OTA app slots. Must match `secure_partition_info()` and `partitions_secure.csv`.
+#[cfg(feature = "secure-boot")]
+const SECURE_OTA_REGIONS: &[secure_flash::FlashRegion] = &[
+    secure_flash::FlashRegion::new(0x18000, 0x2000),  // otadata
+    secure_flash::FlashRegion::new(0x20000, 0x170000), // ota_0
+    secure_flash::FlashRegion::new(0x190000, 0x170000), // ota_1
+];
+
+#[cfg(feature = "secure-boot")]
+fn new_ota_storage() -> Result<OtaStorage, secure_flash::FlashError> {
+    secure_flash::EncryptedOtaStorage::new(
+        secure_flash::esp32c3::Esp32C3::default(),
+        SECURE_OTA_REGIONS,
+    )
+}
+
+#[cfg(not(feature = "secure-boot"))]
+fn new_ota_storage() -> Result<OtaStorage, core::convert::Infallible> {
+    Ok(OtaStorage::new())
+}
 
 #[cfg(not(feature = "secure-boot"))]
 const PARTITION_TABLE_OFFSET: u32 = 0x8000;
@@ -58,7 +80,10 @@ pub struct EspFlashWriter {
 impl EspFlashWriter {
     /// Create a new flash writer.
     pub fn new() -> Result<Self, OtaError> {
-        let flash = OtaStorage::new();
+        let flash = new_ota_storage().map_err(|e| {
+            log::error!("Failed to construct OTA flash storage: {:?}", e);
+            OtaError::FinalizeError
+        })?;
         let ota = new_ota(flash).map_err(|e| {
             log::error!("Failed to initialize OTA: {:?}", e);
             OtaError::FinalizeError
@@ -126,7 +151,9 @@ impl FlashWriter for EspFlashWriter {
         #[cfg(feature = "secure-boot")]
         {
             use embedded_storage::ReadStorage;
-            let mut flash = OtaStorage::new();
+            let Ok(mut flash) = new_ota_storage() else {
+                return false;
+            };
             // otadata has two 32-byte select entries, each in its own 4 KB
             // sector. The state field lives at byte offset 24 of each entry.
             const STATE_NEW: u32 = 0; // EspOtaImgNew
@@ -149,7 +176,8 @@ impl FlashWriter for EspFlashWriter {
         }
         #[cfg(not(feature = "secure-boot"))]
         {
-            let flash = OtaStorage::new();
+            // In dev mode `new_ota_storage` is infallible.
+            let Ok(flash) = new_ota_storage();
             let mut ota = match new_ota(flash) {
                 Ok(ota) => ota,
                 Err(_) => return false,

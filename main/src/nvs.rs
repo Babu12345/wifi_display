@@ -48,7 +48,7 @@ impl DisplayMode {
 /// Load display mode. Returns `LiveUpdates` if unset (0xFF) or invalid.
 pub fn load_display_mode() -> DisplayMode {
     let mut storage_buf = [0u8; 4];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
 
     match storage.read(StorageContents::DisplayMode) {
         Ok(data) => match DisplayMode::from_byte(data[0]) {
@@ -72,7 +72,7 @@ pub fn load_display_mode() -> DisplayMode {
 /// `display_mode = nvs::set_display_mode(DisplayMode::CustomText);`.
 pub fn set_display_mode(mode: DisplayMode) -> DisplayMode {
     let mut storage_buf = [0u8; 4];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
 
     match storage.write_bytes(StorageContents::DisplayMode, 0, &[mode.as_byte()]) {
         Ok(_) => log::info!("Saved display mode: {:?}", mode),
@@ -173,7 +173,7 @@ impl MqttTopicsData {
 /// Load the persisted dynamic MQTT topics. Returns empty on uninitialized flash.
 pub fn load_mqtt_topics() -> Vec<String<64>, MAX_DYNAMIC_TOPICS> {
     let mut storage_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
 
     match storage.read(StorageContents::MqttTopics) {
         Ok(data) => {
@@ -203,7 +203,7 @@ pub fn load_mqtt_topics() -> Vec<String<64>, MAX_DYNAMIC_TOPICS> {
 /// Save the current set of dynamic MQTT topics.
 pub fn save_mqtt_topics(topics: &Vec<String<64>, MAX_DYNAMIC_TOPICS>) {
     let mut storage_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
 
     let data = MqttTopicsData {
         topics: topics.clone(),
@@ -232,7 +232,7 @@ pub fn save_mqtt_topics(topics: &Vec<String<64>, MAX_DYNAMIC_TOPICS>) {
 /// Load `min_update_interval` (seconds between display refreshes).
 pub fn load_min_update_interval() -> Option<u32> {
     let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
 
     match storage.read(StorageContents::MinUpdateInterval) {
         Ok(data) => {
@@ -257,7 +257,7 @@ pub fn load_min_update_interval() -> Option<u32> {
 /// Save `min_update_interval`.
 pub fn save_min_update_interval(interval: u32) {
     let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
 
     let bytes = interval.to_le_bytes();
     match storage.write_bytes(StorageContents::MinUpdateInterval, 0, &bytes) {
@@ -270,7 +270,7 @@ pub fn save_min_update_interval(interval: u32) {
 /// treated as "unset" since zero would disable full refreshes entirely.
 pub fn load_max_cycles() -> Option<u8> {
     let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
 
     match storage.read(StorageContents::MaxCyclesBeforeFullRefresh) {
         Ok(data) => {
@@ -296,7 +296,7 @@ pub fn load_max_cycles() -> Option<u8> {
 /// Save `max_cycles`. Stored as u16 little-endian.
 pub fn save_max_cycles(cycles: u8) {
     let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
 
     let bytes = (cycles as u16).to_le_bytes();
     match storage.write_bytes(StorageContents::MaxCyclesBeforeFullRefresh, 0, &bytes) {
@@ -309,7 +309,7 @@ pub fn save_max_cycles(cycles: u8) {
 /// limiting across reconnects.
 pub fn load_last_update_timestamp() -> Option<u64> {
     let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
 
     match storage.read(StorageContents::LastUpdateTimestamp) {
         Ok(data) => {
@@ -336,7 +336,7 @@ pub fn load_last_update_timestamp() -> Option<u64> {
 /// Save the last successful update timestamp.
 pub fn save_last_update_timestamp(timestamp_secs: u64) {
     let mut storage_buf = [0u8; 16];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
 
     let bytes = timestamp_secs.to_le_bytes();
     match storage.write_bytes(StorageContents::LastUpdateTimestamp, 0, &bytes) {
@@ -356,7 +356,7 @@ pub fn save_last_update_timestamp(timestamp_secs: u64) {
 /// flash) or anything else is treated as false.
 pub fn load_wifi_error_flag() -> bool {
     let mut storage_buf = [0u8; 4];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
 
     match storage.read(StorageContents::WifiErrorFlag) {
         Ok(data) => data[0] == 0x01,
@@ -370,7 +370,7 @@ pub fn load_wifi_error_flag() -> bool {
 /// Persist whether the disconnect screen is currently the last thing painted.
 pub fn save_wifi_error_flag(set: bool) {
     let mut storage_buf = [0u8; 4];
-    let mut storage = PersistentStorage::new(FlashStorage::new(), &mut storage_buf);
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
 
     let byte = if set { 0x01 } else { 0x00 };
     match storage.write_bytes(StorageContents::WifiErrorFlag, 0, &[byte]) {
