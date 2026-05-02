@@ -7,6 +7,8 @@ edition = "2024"
 default = []
 # Production mode: reduces logging to warnings/errors only for power savings
 production = []
+# Secure boot mode: partition table is at 0x10000 instead of 0x8000
+secure-boot = []
 
 [dependencies]
 

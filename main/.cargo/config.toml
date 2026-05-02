@@ -1,7 +1,7 @@
 [target.riscv32imc-unknown-none-elf]
 # Development: Uses espflash's default bootloader with app at 0x10000, 1.5MB size
 # Secure boot: Uses esp-idf bootloader with app at 0x20000 (see secure-flash.sh)
-runner = "espflash flash --monitor -f 20mhz -s 8mb --partition-table partitions.csv"
+runner = "espflash flash --monitor -f 20mhz -s 4mb --partition-table partitions.csv"
 
 [build]
 target = "riscv32imc-unknown-none-elf"

@@ -3,9 +3,21 @@
 //! Wraps `esp-hal-ota` to provide partition discovery, chunk writing,
 //! CRC verification, and boot target management.
 
-use esp_hal_ota::{Ota, OtaImgState};
+use esp_hal_ota::{Ota, OtaConfiguratuion, OtaImgState};
 use esp_storage::FlashStorage;
 use ota::{FlashWriter, OtaError};
+
+#[cfg(feature = "secure-boot")]
+const PARTITION_TABLE_OFFSET: u32 = 0x10000;
+#[cfg(not(feature = "secure-boot"))]
+const PARTITION_TABLE_OFFSET: u32 = 0x8000;
+
+fn new_ota(flash: FlashStorage) -> Result<Ota<FlashStorage>, esp_hal_ota::OtaError> {
+    Ota::with_configuration(
+        flash,
+        OtaConfiguratuion::new().with_partition_table_offset(PARTITION_TABLE_OFFSET),
+    )
+}
 
 /// ESP32-C3 OTA flash writer backed by `esp-hal-ota`
 pub struct EspFlashWriter {
@@ -16,7 +28,7 @@ impl EspFlashWriter {
     /// Create a new flash writer. Reads the partition table from flash.
     pub fn new() -> Result<Self, OtaError> {
         let flash = FlashStorage::new();
-        let ota = Ota::new(flash).map_err(|e| {
+        let ota = new_ota(flash).map_err(|e| {
             log::error!("Failed to initialize OTA: {:?}", e);
             OtaError::FinalizeError
         })?;
@@ -56,7 +68,7 @@ impl FlashWriter for EspFlashWriter {
         // This is called once at boot before any mutation, so it's safe to
         // do a fresh read.
         let flash = FlashStorage::new();
-        let mut ota = match Ota::new(flash) {
+        let mut ota = match new_ota(flash) {
             Ok(ota) => ota,
             Err(_) => return false,
         };
