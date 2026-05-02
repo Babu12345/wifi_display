@@ -1,6 +1,6 @@
 //! Display handler task for rate-limited display updates
 
-use crate::{nvs, spi::SpiV2, tasks::MatchSliceLengths};
+use crate::{nvs, spi::SpiV2, tasks::MatchSliceLengths, AppFlashStorage as FlashStorage};
 use display::{Display, EPD417, EPD417_SIZE};
 use embassy_sync::{
     blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
@@ -9,7 +9,6 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Timer};
 use esp_hal::{Async, gpio::Output};
-use esp_storage::FlashStorage;
 use text::{Alignment, FontSize, Text};
 
 /// Size of the display message channel
