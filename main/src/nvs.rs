@@ -8,7 +8,7 @@
 
 use core::str::FromStr;
 
-use esp_storage::FlashStorage;
+use crate::AppFlashStorage as FlashStorage;
 use heapless::{String, Vec};
 use nfc::{MAX_NFCDATA_SIZE, NFCData};
 use storage::storage::{PersistentStorage, StorageContents};

@@ -11,7 +11,7 @@ use esp_hal::{
     gpio::{Input, Output},
     i2c::master::I2c,
 };
-use esp_storage::FlashStorage;
+use crate::AppFlashStorage as FlashStorage;
 use nfc::{MAX_NFCDATA_SIZE, Nfc, STM25DV64KC};
 use storage::storage::PersistentStorage;
 

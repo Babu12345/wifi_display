@@ -9,12 +9,25 @@
 #
 # Usage:
 #   ./secure-flash.sh
+#   ./secure-flash.sh --erase-otadata
 #
 # Auto-detects chip state via SECURE_BOOT_EN eFuse:
 #   - Fresh chip:   prompts for confirmation, burns keys, flashes bootloader + partition table + app
 #   - Initialized:  flashes partition table + app (bootloader is signed/locked, can't be re-written)
+#
+# --erase-otadata: also clear the otadata partition so the bootloader stops
+#   trying to boot a stale ota_1 entry (e.g. after a failed OTA). Useful when
+#   reverting to the freshly-flashed ota_0 image.
 
 set -e  # Exit on error
+
+ERASE_OTADATA=0
+for arg in "$@"; do
+    case "$arg" in
+        --erase-otadata) ERASE_OTADATA=1 ;;
+        *) echo "Unknown option: $arg" >&2; exit 1 ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -257,6 +270,19 @@ else
     esptool.py --chip esp32c3 --port "$PORT" write_flash \
         "$PARTITION_TABLE_OFFSET" "$PARTITION_TABLE_ENCRYPTED" \
         "$APP_OFFSET" "$APP_ENCRYPTED"
+
+    if [ "$ERASE_OTADATA" -eq 1 ]; then
+        # esptool's erase_region is blocked by the secure-boot safety check, so
+        # overwrite the 8KB otadata partition with 0xFF instead. The cache MMU
+        # decryption of all-ones ciphertext produces non-zero garbage, the
+        # bootloader's CRC check on each slot fails, and it falls back to
+        # scanning OTA partitions — picking the freshly-flashed ota_0.
+        OTADATA_BLANK="${SCRIPT_DIR}/otadata-blank.bin"
+        python3 -c "import sys; sys.stdout.buffer.write(b'\xff' * 8192)" > "$OTADATA_BLANK"
+        echo -e "${YELLOW}Erasing otadata (forces bootloader to fall back to ota_0)...${NC}"
+        esptool.py --chip esp32c3 --port "$PORT" write_flash 0x18000 "$OTADATA_BLANK"
+        rm -f "$OTADATA_BLANK"
+    fi
 
     echo -e "${GREEN}=== Update flashed! ===${NC}"
 fi

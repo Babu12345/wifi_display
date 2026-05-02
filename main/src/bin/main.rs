@@ -73,7 +73,9 @@ use main::tasks::task_display_handler::{
 use main::tasks::task_nfc::task_nfc;
 use main::tasks::task_wifi_runner::task_wifi_runner;
 use main::{NUM_NFC_CHANGE_RECEIVERS, NUM_NOTIFICATION_RECEIVERS};
-use main::{NotificationType, device_client_id, initalize_logger, initialize_peripherals, mk_static};
+use main::{
+    NotificationType, device_client_id, initalize_logger, initialize_peripherals, mk_static,
+};
 use nfc::{Nfc, STM25DV64KC};
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {

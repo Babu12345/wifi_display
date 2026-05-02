@@ -78,7 +78,11 @@ fi
 cd "$SCRIPT_DIR"
 
 echo ">>> Building release firmware..."
-cargo build --release
+if [[ "$SECURE" -eq 1 ]]; then
+    cargo build --release --features secure-boot
+else
+    cargo build --release
+fi
 
 OUT_DIR="${WEBSITE_FIRMWARE_DIR}/${VERSION}"
 mkdir -p "$OUT_DIR"
@@ -92,8 +96,18 @@ if [[ "$SECURE" -eq 1 ]]; then
         echo "Error: secure boot signing key not found at ${SIGNING_KEY}" >&2
         exit 1
     fi
+    VENV_DIR="${PROJECT_ROOT}/.venv"
+    if [[ ! -d "$VENV_DIR" ]]; then
+        echo "Error: Python venv not found at ${VENV_DIR}" >&2
+        echo "Create one with: python3 -m venv .venv && source .venv/bin/activate && pip install esptool" >&2
+        exit 1
+    fi
+    # shellcheck disable=SC1091
+    source "${VENV_DIR}/bin/activate"
     echo ">>> Signing with secure boot V2 key..."
-    espsecure.py sign_data --version 2 --keyfile "$SIGNING_KEY" "$OUT_BIN"
+    SIGNED_TMP="${OUT_BIN}.signed"
+    espsecure.py sign_data --version 2 --keyfile "$SIGNING_KEY" --output "$SIGNED_TMP" "$OUT_BIN"
+    mv "$SIGNED_TMP" "$OUT_BIN"
 fi
 
 SIZE=$(stat -f%z "$OUT_BIN")

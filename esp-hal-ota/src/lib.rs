@@ -86,6 +86,40 @@ where
         })
     }
 
+    /// Construct `Ota` with a caller-supplied partition layout, bypassing the
+    /// partition-table read. Use when the partition table on flash isn't
+    /// readable through this `Storage` impl — e.g., flash encryption is enabled
+    /// and the table at `0x10000` is encrypted, but the OTA partitions
+    /// themselves can be written via an encryption-aware path.
+    pub fn with_partition_info(flash: S, pinfo: PartitionInfo) -> Result<Self> {
+        if pinfo.ota_partitions_count < 2 {
+            error!("Not enough OTA partitions! (>= 2)");
+            return Err(OtaError::NotEnoughPartitions);
+        }
+
+        Ok(Ota {
+            flash,
+            progress: None,
+            pinfo,
+        })
+    }
+
+    /// Mutable access to the underlying flash storage. Useful when the storage
+    /// impl maintains state (e.g. per-block buffering for encrypted writes)
+    /// and needs to be flushed at OTA completion.
+    pub fn flash_mut(&mut self) -> &mut S {
+        &mut self.flash
+    }
+
+    /// The otadata partition offset and size, mirrored from the partition info
+    /// the OTA was constructed with. Useful for callers that need to erase or
+    /// pre-condition otadata before `ota_flush` runs (e.g. encryption-aware
+    /// storage that requires the destination block to be 0xFF before encrypted
+    /// write).
+    pub fn otadata_region(&self) -> (u32, u32) {
+        (self.pinfo.otadata_offset, self.pinfo.otadata_size)
+    }
+
     fn get_partitions(&self) -> &[(u32, u32)] {
         &self.pinfo.ota_partitions[..self.pinfo.ota_partitions_count]
     }
