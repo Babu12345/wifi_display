@@ -23,6 +23,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 import time
 
@@ -31,6 +32,17 @@ try:
 except ImportError:
     print("error: pyserial not installed. Activate the project's .venv first.", file=sys.stderr)
     sys.exit(2)
+
+
+def wait_for_port(path: str, timeout: float) -> bool:
+    """Block until `path` exists on the filesystem (USB CDC enumeration), or
+    until `timeout` seconds elapse. Returns True if the port appeared."""
+    start = time.time()
+    while time.time() - start < timeout:
+        if os.path.exists(path):
+            return True
+        time.sleep(0.25)
+    return False
 
 
 SUCCESS_MARKERS = [
@@ -58,7 +70,21 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("port")
     p.add_argument("--timeout", type=int, default=120)
+    p.add_argument(
+        "--port-wait",
+        type=int,
+        default=15,
+        help="seconds to wait for the port path to exist (handles USB re-enumeration)",
+    )
     args = p.parse_args()
+
+    if not wait_for_port(args.port, args.port_wait):
+        print(
+            f"error: {args.port} did not appear within {args.port_wait}s "
+            "(USB device not enumerated)",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         ser = serial.Serial()

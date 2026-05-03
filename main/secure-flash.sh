@@ -428,7 +428,10 @@ if [ "$CHIP_MODE" = "stuck-release" ] && [ "$RECOVER" -eq 1 ]; then
 
     echo ""
     echo -e "${YELLOW}Step 3: Wait for chip to boot${NC}"
-    sleep 2
+    # SPI_BOOT_CRYPT_CNT is now 0b111 and the flash is fully encrypted, so the
+    # bootloader skips the encryption pass entirely. A short settle delay is
+    # enough — no need for the 45s wait the fresh-init path uses.
+    sleep 5
     if ! python3 "${SCRIPT_DIR}/wait-for-boot.py" "$PORT" --timeout 60; then
         echo ""
         echo -e "${RED}Chip didn't reach a boot-success marker. The encryption hardware${NC}"
@@ -490,15 +493,20 @@ if [ "$CHIP_INITIALIZED" = false ]; then
         echo -e "${YELLOW}Verify later with: ./main/secure-flash.sh --verify${NC}"
     else
         echo -e "${CYAN}=== Waiting for first-boot encryption to finish ===${NC}"
-        echo "Tailing serial output without DTR/RTS toggling — the chip can't"
-        echo "be interrupted by us reading. Looking for the bootloader's"
-        echo "'Flash encryption completed' / app start markers."
+        echo "The bootloader's encryption pass takes 30–60s for a 1MB app and"
+        echo "is the interruptible window: any external reset between"
+        echo "esp_flash_encryption_enable_secure_features() and"
+        echo "esp_flash_encrypt_enable() leaves the chip stuck."
         echo ""
-        # The chip should already be booting (esptool just hard-reset it). Give
-        # it a tiny head start so the first bytes don't get dropped while we
-        # open the port.
-        sleep 2
-        if ! python3 "${SCRIPT_DIR}/wait-for-boot.py" "$PORT" --timeout 120; then
+        # Sleep silently — do NOT open the serial port — until we're confident
+        # the encryption pass is past. Even with DTR/RTS held low, opening the
+        # port through pyserial can briefly assert control lines on some
+        # macOS/USB stacks, which is enough to reset the chip mid-encryption.
+        # Empirically the dangerous window closes within ~45s.
+        echo -e "${YELLOW}Sleeping 45s before touching the serial port...${NC}"
+        sleep 45
+        echo -e "${CYAN}Now tailing serial output for boot markers.${NC}"
+        if ! python3 "${SCRIPT_DIR}/wait-for-boot.py" "$PORT" --timeout 90; then
             echo ""
             echo -e "${RED}Did not see a successful-boot marker within the timeout.${NC}"
             echo -e "${YELLOW}This may mean the bootloader is still encrypting (very large${NC}"
