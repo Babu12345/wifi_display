@@ -51,6 +51,11 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Pure-logic helpers (chip-state classification, eFuse parsing, post-init
+# verification) live in the lib so `test-secure-flash.sh` can exercise them
+# without touching hardware.
+source "${SCRIPT_DIR}/secure-flash-lib.sh"
 VENV_DIR="${PARENT_DIR}/.venv"
 SIGNING_KEY="${PARENT_DIR}/secure_boot_signing_key.pem"
 ENCRYPTION_KEY="${PARENT_DIR}/flash_encryption_key.bin"
@@ -114,106 +119,31 @@ fi
 BOOTLOADER_BIN="${BOOTLOADER_DIR}/build/bootloader/bootloader.bin"
 PARTITION_TABLE="${BOOTLOADER_DIR}/build/partition_table/partition-table.bin"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
-# Detect bootloader flash encryption mode from sdkconfig
-detect_flash_encryption_mode() {
-    if [ ! -f "$SDKCONFIG" ]; then
-        echo "unknown"
-        return
-    fi
-
-    if grep -q "CONFIG_SECURE_FLASH_ENCRYPTION_MODE_DEVELOPMENT=y" "$SDKCONFIG" 2>/dev/null; then
-        echo "development"
-    elif grep -q "CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE=y" "$SDKCONFIG" 2>/dev/null; then
-        echo "release"
-    else
-        echo "unknown"
-    fi
+# Read the chip's eFuse summary over UART (wraps espefuse.py).
+read_chip_efuses() {
+    espefuse.py --chip esp32c3 --port "$PORT" summary 2>&1
 }
 
-# Read the chip's eFuse summary and verify it matches the expected end state
-# for the given mode. Used as post-init validation after the bootloader's
-# first boot has completed.
-#
-# Args:
-#   $1 — expected mode: "release" or "development"
-# Returns 0 if all checks pass, non-zero otherwise.
-verify_chip_post_init() {
+# Read eFuses and verify them. Wraps the lib's verify_chip_post_init with the
+# UART read step + the post-init failure hint that's only meaningful when the
+# script is being run interactively against real hardware.
+verify_chip_post_init_live() {
     local expected_mode="$1"
     echo -e "${CYAN}Reading eFuse state...${NC}"
-    local efuse=$(espefuse.py --chip esp32c3 --port "$PORT" summary 2>&1)
-
-    local secure_boot key_purpose_0 key_purpose_1 dis_pad_jtag dis_usb_jtag spi_crypt_cnt dis_manual_enc rd_dis
-    secure_boot=$(echo "$efuse" | grep -E "^SECURE_BOOT_EN " | grep -oE "True|False" | head -1)
-    key_purpose_0=$(echo "$efuse" | grep -E "^KEY_PURPOSE_0 " | grep -oE "XTS_AES_128_KEY|USER" | head -1)
-    key_purpose_1=$(echo "$efuse" | grep -E "^KEY_PURPOSE_1 " | grep -oE "SECURE_BOOT_DIGEST0|USER" | head -1)
-    dis_pad_jtag=$(echo "$efuse" | grep -E "^DIS_PAD_JTAG " | grep -oE "True|False" | head -1)
-    dis_usb_jtag=$(echo "$efuse" | grep -E "^DIS_USB_JTAG " | grep -oE "True|False" | head -1)
-    spi_crypt_cnt=$(echo "$efuse" | grep -E "^SPI_BOOT_CRYPT_CNT " | grep -oE "0b[01]+" | head -1)
-    dis_manual_enc=$(echo "$efuse" | grep -E "^DIS_DOWNLOAD_MANUAL_ENCRYPT " | grep -oE "True|False" | head -1)
-    rd_dis=$(echo "$efuse" | grep -E "^RD_DIS " | grep -oE "0b[01]+" | head -1)
-
-    local pass=0
-    check() {
-        local name="$1" actual="$2" expected="$3"
-        if [ "$actual" = "$expected" ]; then
-            echo -e "  ${GREEN}✓${NC} $name = $actual"
-        else
-            echo -e "  ${RED}✗${NC} $name = $actual (expected $expected)"
-            pass=1
-        fi
-    }
-
-    echo "Common security checks:"
-    check "SECURE_BOOT_EN"               "$secure_boot"    "True"
-    check "KEY_PURPOSE_0"                "$key_purpose_0"  "XTS_AES_128_KEY"
-    check "KEY_PURPOSE_1"                "$key_purpose_1"  "SECURE_BOOT_DIGEST0"
-    check "DIS_PAD_JTAG"                 "$dis_pad_jtag"   "True"
-    check "DIS_USB_JTAG"                 "$dis_usb_jtag"   "True"
-    # RD_DIS bit 0 protects BLOCK_KEY0 (the encryption key) from being read.
-    if [[ "$rd_dis" =~ ^0b.*1$ ]]; then
-        echo -e "  ${GREEN}✓${NC} RD_DIS bit 0 set (encryption key read-protected)"
-    else
-        echo -e "  ${RED}✗${NC} RD_DIS = $rd_dis (encryption key NOT read-protected)"
-        pass=1
-    fi
-
-    echo ""
-    if [ "$expected_mode" = "release" ]; then
-        echo "Release-mode lockdown checks:"
-        check "DIS_DOWNLOAD_MANUAL_ENCRYPT" "$dis_manual_enc" "True"
-        check "SPI_BOOT_CRYPT_CNT"          "$spi_crypt_cnt"  "0b111"
-    else
-        echo "Development-mode checks:"
-        check "DIS_DOWNLOAD_MANUAL_ENCRYPT" "$dis_manual_enc" "False"
-        check "SPI_BOOT_CRYPT_CNT"          "$spi_crypt_cnt"  "0b001"
-    fi
-
-    local mode_label="DEVELOPMENT"
-    [ "$expected_mode" = "release" ] && mode_label="RELEASE"
-
-    echo ""
-    if [ $pass -eq 0 ]; then
-        echo -e "${GREEN}=== Verification passed — chip is correctly locked into ${mode_label} mode ===${NC}"
+    local efuse
+    efuse=$(read_chip_efuses)
+    if verify_chip_post_init "$expected_mode" "$efuse"; then
         return 0
-    else
-        echo -e "${RED}=== Verification FAILED — chip state does not match expected ${mode_label} mode ===${NC}"
-        echo -e "${YELLOW}If the chip just finished --init, the bootloader's first boot may not have completed.${NC}"
-        echo -e "${YELLOW}Power-cycle the chip, wait 30+ seconds, then re-run with: ./main/secure-flash.sh --verify${NC}"
-        return 1
     fi
+    echo -e "${YELLOW}If the chip just finished --init, the bootloader's first boot may not have completed.${NC}"
+    echo -e "${YELLOW}Power-cycle the chip, wait 30+ seconds, then re-run with: ./main/secure-flash.sh --verify${NC}"
+    return 1
 }
 
 # What the LOCAL bootloader source is built for. This only takes effect on a
 # chip going through `--init`; for already-initialized chips the bootloader
 # on flash is whatever was there at init time and can't be replaced.
-FLASH_MODE=$(detect_flash_encryption_mode)
+FLASH_MODE=$(detect_flash_encryption_mode "$SDKCONFIG")
 echo ""
 if [ "$FLASH_MODE" == "development" ]; then
     echo -e "${CYAN}Local bootloader build: ${GREEN}DEVELOPMENT${NC}"
@@ -251,28 +181,14 @@ fi
 # level — those imply very different behavior even if the local bootloader
 # source has been switched modes since init.
 echo -e "${CYAN}Detecting chip state from eFuses...${NC}"
-EFUSE_SUMMARY=$(espefuse.py --chip esp32c3 --port "$PORT" summary 2>&1)
-SECURE_BOOT_EN=$(echo "$EFUSE_SUMMARY" | grep -E "^SECURE_BOOT_EN " | grep -oE "True|False" | head -1)
-DIS_MANUAL_ENC=$(echo "$EFUSE_SUMMARY" | grep -E "^DIS_DOWNLOAD_MANUAL_ENCRYPT " | grep -oE "True|False" | head -1)
-SPI_CRYPT_CNT=$(echo "$EFUSE_SUMMARY" | grep -E "^SPI_BOOT_CRYPT_CNT " | grep -oE "0b[01]+" | head -1)
-
-if [ "$SECURE_BOOT_EN" == "False" ]; then
+EFUSE_SUMMARY=$(read_chip_efuses)
+CHIP_MODE=$(classify_chip_state "$EFUSE_SUMMARY")
+DIS_MANUAL_ENC=$(extract_efuse_field "$EFUSE_SUMMARY" "DIS_DOWNLOAD_MANUAL_ENCRYPT" "True|False")
+SPI_CRYPT_CNT=$(extract_efuse_field "$EFUSE_SUMMARY" "SPI_BOOT_CRYPT_CNT" "0b[01]+")
+if [ "$CHIP_MODE" = "fresh" ]; then
     CHIP_INITIALIZED=false
-    CHIP_MODE="fresh"
-elif [ "$DIS_MANUAL_ENC" == "True" ] && [ "$SPI_CRYPT_CNT" != "0b111" ]; then
-    # Release-mode lockdown was burned (DIS_DOWNLOAD_MANUAL_ENCRYPT set), but
-    # SPI_BOOT_CRYPT_CNT didn't reach the locked-on state (0b111). This is
-    # the stuck state from a first-boot encrypt that got interrupted before
-    # `esp_flash_encrypt_enable()` could run — the chip can't decrypt its own
-    # encrypted flash, so it boot-loops on "invalid header".
-    CHIP_INITIALIZED=true
-    CHIP_MODE="stuck-release"
-elif [ "$DIS_MANUAL_ENC" == "True" ]; then
-    CHIP_INITIALIZED=true
-    CHIP_MODE="release"
 else
     CHIP_INITIALIZED=true
-    CHIP_MODE="development"
 fi
 
 # --verify: just check the chip's eFuse state matches the local bootloader's
@@ -286,7 +202,7 @@ if [ "$VERIFY_ONLY" -eq 1 ]; then
     fi
     echo ""
     echo -e "${CYAN}=== Verifying chip against expected $FLASH_MODE state ===${NC}"
-    verify_chip_post_init "$FLASH_MODE"
+    verify_chip_post_init_live "$FLASH_MODE"
     exit $?
 fi
 
@@ -441,7 +357,7 @@ if [ "$CHIP_MODE" = "stuck-release" ] && [ "$RECOVER" -eq 1 ]; then
 
     echo ""
     echo -e "${YELLOW}Step 4: Verify eFuse state${NC}"
-    if ! verify_chip_post_init "release"; then
+    if ! verify_chip_post_init_live "release"; then
         exit 1
     fi
     echo ""
@@ -516,7 +432,7 @@ if [ "$CHIP_INITIALIZED" = false ]; then
         fi
         echo ""
         echo -e "${CYAN}=== Post-init verification ===${NC}"
-        if ! verify_chip_post_init "$FLASH_MODE"; then
+        if ! verify_chip_post_init_live "$FLASH_MODE"; then
             exit 1
         fi
     fi
@@ -565,7 +481,7 @@ else
     if [ "$SKIP_VERIFY" -eq 0 ]; then
         echo ""
         echo -e "${CYAN}=== Sanity-checking eFuse state ===${NC}"
-        if ! verify_chip_post_init "$CHIP_MODE"; then
+        if ! verify_chip_post_init_live "$CHIP_MODE"; then
             echo -e "${YELLOW}(eFuses unchanged by an update — failure here means the chip's${NC}"
             echo -e "${YELLOW}lockdown state was already inconsistent with its detected mode.)${NC}"
             exit 1
