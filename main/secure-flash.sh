@@ -10,25 +10,41 @@
 # Usage:
 #   ./secure-flash.sh
 #   ./secure-flash.sh --erase-otadata
+#   ./secure-flash.sh --verify
+#   ./secure-flash.sh --recover
+#   ./secure-flash.sh --no-verify
 #
-# Auto-detects chip state via SECURE_BOOT_EN eFuse:
-#   - Fresh chip:   prompts for confirmation, burns keys, flashes bootloader + partition table + app
-#   - Initialized:  flashes partition table + app (bootloader is signed/locked, can't be re-written)
+# Auto-detects chip state via eFuses:
+#   - Fresh:        flashes plaintext bootloader/partition/app, lets the
+#                   bootloader's first boot encrypt + burn mode-specific eFuses,
+#                   then waits via serial polling and verifies eFuse state.
+#   - Development:  pre-encrypts and flashes partition table + app.
+#   - Release:      refuses (UART writes are blocked; use OTA).
+#   - Stuck-release: detected when DIS_DOWNLOAD_MANUAL_ENCRYPT=True but
+#                   SPI_BOOT_CRYPT_CNT≠0b111 — the bootloader's first-boot
+#                   encryption was interrupted. Run with --recover to repair.
 #
-# --erase-otadata: also clear the otadata partition so the bootloader stops
-#   trying to boot a stale ota_1 entry (e.g. after a failed OTA). Useful when
-#   reverting to the freshly-flashed ota_0 image.
+# Flags:
+#   --erase-otadata  After flashing, write 8 KiB of 0xFF to the otadata
+#                    partition (forces bootloader fallback to ota_0).
+#   --verify         Skip flashing; just read eFuses and confirm they match
+#                    the expected end state for the local bootloader's mode.
+#   --recover        Auto-repair a stuck-release chip: burn SPI_BOOT_CRYPT_CNT
+#                    to 0b111, re-flash partition + app pre-encrypted, verify.
+#   --no-verify      Skip post-flash verification (for CI / scripted runs).
 
 set -e  # Exit on error
 
 ERASE_OTADATA=0
 VERIFY_ONLY=0
 SKIP_VERIFY=0
+RECOVER=0
 for arg in "$@"; do
     case "$arg" in
         --erase-otadata) ERASE_OTADATA=1 ;;
         --verify)        VERIFY_ONLY=1 ;;
         --no-verify)     SKIP_VERIFY=1 ;;
+        --recover)       RECOVER=1 ;;
         *) echo "Unknown option: $arg" >&2; exit 1 ;;
     esac
 done
@@ -243,6 +259,14 @@ SPI_CRYPT_CNT=$(echo "$EFUSE_SUMMARY" | grep -E "^SPI_BOOT_CRYPT_CNT " | grep -o
 if [ "$SECURE_BOOT_EN" == "False" ]; then
     CHIP_INITIALIZED=false
     CHIP_MODE="fresh"
+elif [ "$DIS_MANUAL_ENC" == "True" ] && [ "$SPI_CRYPT_CNT" != "0b111" ]; then
+    # Release-mode lockdown was burned (DIS_DOWNLOAD_MANUAL_ENCRYPT set), but
+    # SPI_BOOT_CRYPT_CNT didn't reach the locked-on state (0b111). This is
+    # the stuck state from a first-boot encrypt that got interrupted before
+    # `esp_flash_encrypt_enable()` could run — the chip can't decrypt its own
+    # encrypted flash, so it boot-loops on "invalid header".
+    CHIP_INITIALIZED=true
+    CHIP_MODE="stuck-release"
 elif [ "$DIS_MANUAL_ENC" == "True" ]; then
     CHIP_INITIALIZED=true
     CHIP_MODE="release"
@@ -293,6 +317,19 @@ case "$CHIP_MODE" in
         echo -e "${CYAN}  1. ./main/publish-firmware.sh <version> --secure${NC}"
         echo -e "${CYAN}  2. Trigger OTA via MQTT (the script prints the trigger payload)${NC}"
         exit 1
+        ;;
+    stuck-release)
+        echo -e "${RED}Chip's actual mode: STUCK RELEASE${NC} (DIS_DOWNLOAD_MANUAL_ENCRYPT=True, SPI_BOOT_CRYPT_CNT=$SPI_CRYPT_CNT)"
+        echo -e "${YELLOW}  The release-mode lockdown was burned but SPI_BOOT_CRYPT_CNT never${NC}"
+        echo -e "${YELLOW}  reached 0b111 — this happens when the bootloader's first-boot${NC}"
+        echo -e "${YELLOW}  encryption was interrupted by a DTR reset before completion.${NC}"
+        echo -e "${YELLOW}  The chip is currently boot-looping on 'invalid header'.${NC}"
+        echo ""
+        echo -e "${CYAN}Run with --recover to attempt automatic repair:${NC}"
+        echo -e "${CYAN}    PORT=$PORT ./main/secure-flash.sh --recover${NC}"
+        if [ "$RECOVER" -eq 0 ]; then
+            exit 1
+        fi
         ;;
 esac
 echo ""
@@ -348,6 +385,65 @@ if [ ! -f "$PARTITION_TABLE" ]; then
     echo -e "${RED}Error: Partition table binary not found at ${PARTITION_TABLE}${NC}"
     echo "Build it first: ./main/build-bootloader.sh"
     exit 1
+fi
+
+if [ "$CHIP_MODE" = "stuck-release" ] && [ "$RECOVER" -eq 1 ]; then
+    # === Auto-recovery: stuck release-mode init ===
+    #
+    # The chip is in the post-encrypt, pre-CRYPT_CNT state. The flash already
+    # holds correctly encrypted bootloader + (probably) partition table, and
+    # possibly a partially-encrypted app. We:
+    #
+    #   1. Burn SPI_BOOT_CRYPT_CNT to 0b111 — turns on hardware decryption.
+    #   2. Re-flash partition table + app with pre-encrypted bytes (using
+    #      --force, since esptool can't tell our bytes are pre-encrypted and
+    #      defaults to refusing on a release-mode chip). This guarantees the
+    #      app is fully encrypted regardless of how far the bootloader's
+    #      original encrypt_contents got.
+    #   3. Wait for boot via the no-DTR serial reader.
+    #   4. Verify all eFuses match the release-mode end state.
+    echo -e "${CYAN}=== Recovery: completing stuck release-mode init ===${NC}"
+    echo ""
+    echo -e "${YELLOW}Step 1: Burn SPI_BOOT_CRYPT_CNT 0b$SPI_CRYPT_CNT → 0b111${NC}"
+    espefuse.py --chip esp32c3 --port "$PORT" \
+        burn_efuse SPI_BOOT_CRYPT_CNT 7 --do-not-confirm
+
+    echo ""
+    echo -e "${YELLOW}Step 2: Build, sign, encrypt, and re-flash app + partition table${NC}"
+    (cd "$SCRIPT_DIR" && cargo build --release --features secure-boot)
+    espflash save-image --chip esp32c3 "${TARGET_DIR}/${BINARY_NAME}" "$APP_BIN"
+    espsecure.py sign_data --version 2 --keyfile "$SIGNING_KEY" --output "$APP_SIGNED" "$APP_BIN"
+    espsecure.py encrypt_flash_data --aes_xts --keyfile "$ENCRYPTION_KEY" \
+        --address "$APP_OFFSET" --output "$APP_ENCRYPTED" "$APP_SIGNED"
+
+    PARTITION_TABLE_ENCRYPTED="${PARENT_DIR}/partition-table-encrypted.bin"
+    espsecure.py encrypt_flash_data --aes_xts --keyfile "$ENCRYPTION_KEY" \
+        --address "$PARTITION_TABLE_OFFSET" --output "$PARTITION_TABLE_ENCRYPTED" "$PARTITION_TABLE"
+
+    # --force tells esptool to write the bytes even though encryption is on
+    # at the chip level — safe because we're providing pre-encrypted bytes.
+    esptool.py --chip esp32c3 --port "$PORT" --before default_reset write_flash --force \
+        "$PARTITION_TABLE_OFFSET" "$PARTITION_TABLE_ENCRYPTED" \
+        "$APP_OFFSET" "$APP_ENCRYPTED"
+
+    echo ""
+    echo -e "${YELLOW}Step 3: Wait for chip to boot${NC}"
+    sleep 2
+    if ! python3 "${SCRIPT_DIR}/wait-for-boot.py" "$PORT" --timeout 60; then
+        echo ""
+        echo -e "${RED}Chip didn't reach a boot-success marker. The encryption hardware${NC}"
+        echo -e "${RED}may be permanently broken on this chip — set it aside.${NC}"
+        exit 1
+    fi
+
+    echo ""
+    echo -e "${YELLOW}Step 4: Verify eFuse state${NC}"
+    if ! verify_chip_post_init "release"; then
+        exit 1
+    fi
+    echo ""
+    echo -e "${GREEN}=== Recovery successful — chip is fully release-mode locked ===${NC}"
+    exit 0
 fi
 
 if [ "$CHIP_INITIALIZED" = false ]; then
