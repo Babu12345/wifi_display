@@ -41,7 +41,6 @@ esp-hal-embassy = { version = "^0.6.0", features = ["esp32c3"] }
 static_cell = { version = "2.1.0" }
 esp-storage = { version = "0.4.0", features = ["esp32c3"] }
 embedded-storage = "0.3.1"
-esp-hal-ota = { path = "../esp-hal-ota", features = ["esp32c3", "log"] }
 
 esp-wifi = { version = "0.12.0", default-features = false, features = [
     "esp32c3",
@@ -72,8 +71,12 @@ storage = { git = "https://github.com/Babu12345/display_storage.git", rev = "f96
 text = { git = "https://github.com/Babu12345/eink_display.git", rev = "f6e064685434184014f410614989b0d2ef9f8dde", default-features = false }
 url = { git = "https://github.com/Babu12345/eink_display.git", rev = "f6e064685434184014f410614989b0d2ef9f8dde", default-features = false }
 ota = { git = "https://github.com/Babu12345/ota.git", rev = "30d80551e4a6ac827c98f2241e77eebae169d57c" }
-secure_flash = { git = "https://github.com/Babu12345/secure_flash.git", rev = "39909268ceee9c0f676617a765a630de9fb9231b", features = [
+secure_flash = { git = "https://github.com/Babu12345/secure_flash.git", rev = "b33e4c8715cf8cedcc10e6b4435a79598d362cee", features = [
     "esp32c3",
+] }
+esp-hal-ota = { git = "https://github.com/Babu12345/secure_flash.git", rev = "b33e4c8715cf8cedcc10e6b4435a79598d362cee", features = [
+    "esp32c3",
+    "log",
 ] }
 
 # Patch esp-wifi to use forked version with configurable TX power
