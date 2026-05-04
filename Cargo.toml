@@ -2,7 +2,7 @@
 [workspace]
 exclude = ["main"]
 resolver = "2"
-members = ["decoding", "secure_flash"]
+members = ["decoding"]
 
 
 [workspace.package]
