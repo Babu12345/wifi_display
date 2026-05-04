@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build, package, and publish firmware for OTA distribution.
-# Default: dev mode (unsigned). Pass --secure to sign with the secure boot key.
+# Default: signed with the secure boot key. Pass --insecure for an unsigned dev build.
 
 set -euo pipefail
 
@@ -23,18 +23,18 @@ WEBSITE_FIRMWARE_DIR="${FIRMWARE_HOST_DIR}"
 SIGNING_KEY="${PROJECT_ROOT}/secure_boot_signing_key.pem"
 TARGET_ELF="${SCRIPT_DIR}/target/riscv32imc-unknown-none-elf/release/main"
 
-SECURE=0
+SECURE=1
 VERSION=""
 
 usage() {
     cat <<EOF
-Usage: $0 <version> [--secure]
+Usage: $0 <version> [--insecure]
 
 Arguments:
   <version>   Semantic version string (e.g. 1.0.0)
 
 Options:
-  --secure    Sign with secure boot V2 key (default: unsigned)
+  --insecure  Skip secure boot signing (default: signed with secure boot V2 key)
   -h, --help  Show this help
 
 Environment (loaded from main/.env):
@@ -50,7 +50,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --secure) SECURE=1; shift ;;
+        --insecure) SECURE=0; shift ;;
         -h|--help) usage 0 ;;
         -*) echo "Unknown option: $1" >&2; usage 1 ;;
         *)
