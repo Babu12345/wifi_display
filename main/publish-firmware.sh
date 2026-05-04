@@ -79,7 +79,7 @@ cd "$SCRIPT_DIR"
 
 echo ">>> Building release firmware..."
 if [[ "$SECURE" -eq 1 ]]; then
-    cargo build --release --features secure-boot
+    cargo build --release --features secure-boot,production
 else
     cargo build --release
 fi

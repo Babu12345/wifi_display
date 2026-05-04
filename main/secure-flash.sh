@@ -289,7 +289,7 @@ fi
 
 # Build the app — needed for both the fresh-chip and update paths.
 echo -e "${YELLOW}Building release binary...${NC}"
-(cd "$SCRIPT_DIR" && cargo build --release --features secure-boot)
+(cd "$SCRIPT_DIR" && cargo build --release --features secure-boot,production)
 
 echo -e "${YELLOW}Converting to flashable binary...${NC}"
 espflash save-image --chip esp32c3 "${TARGET_DIR}/${BINARY_NAME}" "$APP_BIN"
@@ -326,7 +326,7 @@ if [ "$CHIP_MODE" = "stuck-release" ] && [ "$RECOVER" -eq 1 ]; then
 
     echo ""
     echo -e "${YELLOW}Step 2: Build, sign, encrypt, and re-flash app + partition table${NC}"
-    (cd "$SCRIPT_DIR" && cargo build --release --features secure-boot)
+    (cd "$SCRIPT_DIR" && cargo build --release --features secure-boot,production)
     espflash save-image --chip esp32c3 "${TARGET_DIR}/${BINARY_NAME}" "$APP_BIN"
     espsecure.py sign_data --version 2 --keyfile "$SIGNING_KEY" --output "$APP_SIGNED" "$APP_BIN"
     espsecure.py encrypt_flash_data --aes_xts --keyfile "$ENCRYPTION_KEY" \

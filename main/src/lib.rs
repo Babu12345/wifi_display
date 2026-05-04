@@ -17,8 +17,7 @@ pub mod tasks;
 /// hardware backend and uses plain ROM SPI calls — fine for NVS/user data
 /// because the app reads back the same plaintext bytes it wrote.
 #[cfg(feature = "secure-boot")]
-pub type AppFlashStorage =
-    secure_flash::PlainFlashStorage<secure_flash::esp32c3::Esp32C3>;
+pub type AppFlashStorage = secure_flash::PlainFlashStorage<secure_flash::esp32c3::Esp32C3>;
 /// Flash storage type for app-level data (NVS, user data) — dev-mode build
 /// uses `esp-storage`'s default implementation which works correctly when
 /// flash encryption is disabled.
