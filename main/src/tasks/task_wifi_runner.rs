@@ -124,6 +124,20 @@ const OTA_FAILED_MSG: &str = "Update didn't\nfinish.\n\n\
 Your device is\nstill fine.\n\n\
 Scan to visit\nour help site.";
 
+/// Shown on first boot when no WiFi credentials are stored. Paired with the
+/// "get started" landing page QR — the page walks the customer through
+/// installing the app and NFC-tapping to transfer WiFi credentials.
+const REGISTRATION_MSG: &str = "Welcome!\n\n\
+Features:\n\
+- Upload images\n\
+- Display QR codes\n\
+- Bible verses\n\
+- Clock display\n\
+- Weather updates\n\
+- Stock prices\n\
+- And more!\n\n\
+Scan QR to set up";
+
 const MQTT_BROKER: &str = env!("MQTT_BROKER");
 /// MQTT broker as a CStr for TLS servername (requires null terminator)
 const MQTT_BROKER_CSTR: &CStr = {
@@ -329,6 +343,12 @@ async fn task_wifi_runner_inner(
     let mut previously_connected = !nvs::load_wifi_error_flag();
     let mut display_mode = nvs::load_display_mode();
 
+    // Paint REGISTRATION_MSG at most once per task lifetime. The cred-check
+    // block only re-enters after an NFC WifiCredentials notification — if that
+    // ever ends up in the Err arm (write succeeded, read back failed), we
+    // don't want a second e-ink cycle for the same screen.
+    let mut registration_painted = false;
+
     // Check reset reason. ChipPowerOn covers clean power-up, chip-level
     // brownout, and super-WDT (ROM reports all three as 0x01); SysBrownOut
     // covers the slow VDD-sag case. In any of these, the e-ink is still
@@ -450,6 +470,14 @@ async fn task_wifi_runner_inner(
                     }
                 }
                 Err(e) => {
+                    if !registration_painted {
+                        queue_text_with_qr_display(
+                            display_channel,
+                            REGISTRATION_MSG,
+                            GET_STARTED_URL,
+                        );
+                        registration_painted = true;
+                    }
                     ssid = Some(DEFAULT_SSID.try_into().unwrap());
                     password = Some(DEFAULT_PASSWORD.try_into().unwrap());
                     log::info!(
