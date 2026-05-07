@@ -117,6 +117,13 @@ if [[ "$SECURE" -eq 1 ]]; then
     mv "$SIGNED_TMP" "$OUT_BIN"
 fi
 
+# Compute CRC32 over the PLAINTEXT firmware (before any optional encryption).
+# Rationale: esp-hal-ota's bytes-written CRC check on the device runs against
+# the bytes actually flashed — which are plaintext after streaming AES-256-GCM
+# decryption — so trigger.crc32 must be the plaintext CRC for the check to
+# pass. The GCM tag separately authenticates the encrypted blob in transit.
+CRC32=$(python3 -c "import binascii; print(binascii.crc32(open('${OUT_BIN}','rb').read()) & 0xFFFFFFFF)")
+
 if [[ "$ENCRYPT" -eq 1 ]]; then
     if [[ -z "${OTA_AES_KEY_PATH:-}" ]]; then
         echo "Error: OTA_AES_KEY_PATH must be set in main/.env when encrypting." >&2
@@ -161,8 +168,8 @@ else
     IS_ENCRYPTED="false"
 fi
 
+# Size is the on-wire blob size (= plaintext_size + 28 if encrypted).
 SIZE=$(stat -f%z "$OUT_BIN")
-CRC32=$(python3 -c "import binascii; print(binascii.crc32(open('${OUT_BIN}','rb').read()) & 0xFFFFFFFF)")
 
 URL="${FIRMWARE_BASE_URL}/${VERSION}/firmware.bin"
 TRIGGER_JSON="{\"url\":\"${URL}\",\"version\":\"${VERSION}\",\"size\":${SIZE},\"crc32\":${CRC32},\"is_encrypted\":${IS_ENCRYPTED}}"

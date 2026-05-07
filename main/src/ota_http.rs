@@ -170,7 +170,7 @@ pub async fn download_and_flash<'a>(
         return Err("OTA server returned non-200 status");
     }
 
-    log::info!("OTA: HTTP 200 OK, starting download");
+    log::warn!("OTA: HTTP 200 OK, starting download");
 
     // Step 8: Write any body bytes that were in the header buffer
     let leftover = header_len - header_end;
@@ -196,7 +196,7 @@ pub async fn download_and_flash<'a>(
         // Log progress periodically (every ~64KB)
         let written = mgr.progress().bytes_written;
         if written % (64 * 1024) < n as u32 {
-            log::info!(
+            log::warn!(
                 "OTA: {}% ({}/{} bytes)",
                 mgr.progress().percent(),
                 written,
@@ -205,7 +205,7 @@ pub async fn download_and_flash<'a>(
         }
     }
 
-    log::info!(
+    log::warn!(
         "OTA: download complete, {} bytes written",
         mgr.progress().bytes_written
     );
@@ -216,7 +216,7 @@ pub async fn download_and_flash<'a>(
         "OTA finalize failed"
     })?;
 
-    log::info!("OTA: firmware verified and boot target set");
+    log::warn!("OTA: firmware verified and boot target set");
 
     Ok(trigger.version)
 }
