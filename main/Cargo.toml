@@ -70,7 +70,7 @@ display = { git = "https://github.com/Babu12345/eink_display.git", rev = "f6e064
 storage = { git = "https://github.com/Babu12345/display_storage.git", rev = "f96c4f8c7cef2a9874f16e6768c2e08db86d70c4", default-features = false }
 text = { git = "https://github.com/Babu12345/eink_display.git", rev = "f6e064685434184014f410614989b0d2ef9f8dde", default-features = false }
 url = { git = "https://github.com/Babu12345/eink_display.git", rev = "f6e064685434184014f410614989b0d2ef9f8dde", default-features = false }
-ota = { path = "../../ota/ota" }
+ota = { git = "https://github.com/Babu12345/ota.git", rev = "a706a408f97161ae76a2ea770dc08c6f33e3c87b" }
 secure_flash = { git = "https://github.com/Babu12345/secure_flash.git", rev = "b33e4c8715cf8cedcc10e6b4435a79598d362cee", features = [
     "esp32c3",
 ] }
