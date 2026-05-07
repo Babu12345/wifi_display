@@ -6,6 +6,7 @@
 pub mod nvs;
 pub mod ota_flash;
 pub mod ota_http;
+pub mod ota_key;
 pub mod spi;
 pub mod tasks;
 

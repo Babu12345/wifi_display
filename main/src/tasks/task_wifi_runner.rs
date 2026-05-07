@@ -613,7 +613,10 @@ async fn task_wifi_runner_inner(
                     if let Some((buf, n)) = pending {
                         let ok = match crate::ota_flash::EspFlashWriter::new() {
                             Ok(flash) => {
-                                let mut mgr = ota::OtaManager::new(flash);
+                                let mut mgr = ota::OtaManager::new_with_key(
+                                    flash,
+                                    crate::ota_key::ota_aes_key(),
+                                );
                                 crate::ota_http::download_and_flash(
                                     &stack,
                                     &tls,

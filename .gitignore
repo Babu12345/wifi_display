@@ -17,3 +17,6 @@ main/src/certificates/*.key
 
 # Secure boot certificates
 /*.pem
+
+# OTA AES-256-GCM key (lives next to secure_boot_signing_key.pem)
+/firmware_encryption_aes_key

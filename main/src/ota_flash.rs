@@ -108,7 +108,7 @@ impl FlashWriter for EspFlashWriter {
         Ok(())
     }
 
-    fn finalize(&mut self) -> Result<(), OtaError> {
+    fn finalize(&mut self, verify_crc: bool) -> Result<(), OtaError> {
         // Secure-boot builds: verify and rollback both work because
         // `EncryptedOtaStorage::read` routes reads of otadata and OTA
         // partitions through cache-MMU mappings that decrypt on the fly,
@@ -117,7 +117,12 @@ impl FlashWriter for EspFlashWriter {
         // is what makes bootloader rollback work — when the new firmware
         // fails to mark valid, the bootloader needs the OTHER slot to still
         // hold the previous valid entry pointing to the previous firmware.
-        self.ota.ota_flush(true, true).map_err(|e| {
+        //
+        // `verify_crc` is `false` for AES-256-GCM-encrypted firmware: the
+        // trigger's CRC covers the ciphertext blob, but bytes written to
+        // flash are plaintext, so they wouldn't match. The OTA crate has
+        // already verified the GCM tag before calling us in that case.
+        self.ota.ota_flush(verify_crc, true).map_err(|e| {
             log::error!("OTA finalize failed: {:?}", e);
             OtaError::FinalizeError
         })?;

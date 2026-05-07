@@ -24,22 +24,28 @@ SIGNING_KEY="${PROJECT_ROOT}/secure_boot_signing_key.pem"
 TARGET_ELF="${SCRIPT_DIR}/target/riscv32imc-unknown-none-elf/release/main"
 
 SECURE=1
+ENCRYPT=1
 VERSION=""
 
 usage() {
     cat <<EOF
-Usage: $0 <version> [--insecure]
+Usage: $0 <version> [--insecure] [--unencrypted]
 
 Arguments:
-  <version>   Semantic version string (e.g. 1.0.0)
+  <version>      Semantic version string (e.g. 1.0.0)
 
 Options:
-  --insecure  Skip secure boot signing (default: signed with secure boot V2 key)
-  -h, --help  Show this help
+  --insecure     Skip secure boot signing (default: signed with secure boot V2 key)
+  --unencrypted  Skip AES-256-GCM encryption (default: encrypted)
+  -h, --help     Show this help
 
 Environment (loaded from main/.env):
   FIRMWARE_HOST_DIR  Website firmware directory (required)
   FIRMWARE_BASE_URL  Public base URL for hosted firmware (required)
+  OTA_AES_KEY_PATH   Path (relative to main/) to a file containing the
+                     64-hex-char AES-256 key. Required when encrypting.
+  OTA_CRATE_DIR      Override the path to the OTA crate (default:
+                     <repo>/../ota/ota relative to wifi_display/).
 
 Outputs:
   firmware.bin copied to <host-dir>/<version>/firmware.bin
@@ -51,6 +57,7 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --insecure) SECURE=0; shift ;;
+        --unencrypted) ENCRYPT=0; shift ;;
         -h|--help) usage 0 ;;
         -*) echo "Unknown option: $1" >&2; usage 1 ;;
         *)
@@ -110,11 +117,55 @@ if [[ "$SECURE" -eq 1 ]]; then
     mv "$SIGNED_TMP" "$OUT_BIN"
 fi
 
+if [[ "$ENCRYPT" -eq 1 ]]; then
+    if [[ -z "${OTA_AES_KEY_PATH:-}" ]]; then
+        echo "Error: OTA_AES_KEY_PATH must be set in main/.env when encrypting." >&2
+        echo "       Generate a key with:" >&2
+        echo "         openssl rand -hex 32 > firmware_encryption_aes_key" >&2
+        echo "       Then set OTA_AES_KEY_PATH=../firmware_encryption_aes_key in main/.env" >&2
+        echo "       Or pass --unencrypted to skip encryption." >&2
+        exit 1
+    fi
+    KEY_FILE="${SCRIPT_DIR}/${OTA_AES_KEY_PATH}"
+    if [[ ! -f "$KEY_FILE" ]]; then
+        echo "Error: AES key file not found at ${KEY_FILE}" >&2
+        exit 1
+    fi
+    OTA_AES_KEY="$(tr -d '[:space:]' < "$KEY_FILE")"
+    if [[ ${#OTA_AES_KEY} -ne 64 ]]; then
+        echo "Error: ${KEY_FILE} must contain 64 hex chars (got ${#OTA_AES_KEY})." >&2
+        exit 1
+    fi
+    OTA_CRATE_DIR="${OTA_CRATE_DIR:-${PROJECT_ROOT}/../ota/ota}"
+    if [[ ! -f "${OTA_CRATE_DIR}/Cargo.toml" ]]; then
+        echo "Error: OTA crate not found at ${OTA_CRATE_DIR}." >&2
+        echo "       Override with OTA_CRATE_DIR env var if it lives elsewhere." >&2
+        exit 1
+    fi
+
+    echo ">>> Encrypting firmware with AES-256-GCM..."
+    ENC_TMP="${OUT_BIN}.enc"
+    # Run from PROJECT_ROOT (wifi_display/) — there's no .cargo/config.toml
+    # there, so cargo won't apply main/.cargo/config.toml's riscv32imc target
+    # to the host-side encrypt_firmware example.
+    (
+        cd "$PROJECT_ROOT"
+        OTA_AES_KEY="$OTA_AES_KEY" cargo run --quiet --release \
+            --manifest-path "${OTA_CRATE_DIR}/Cargo.toml" \
+            --example encrypt_firmware -- \
+            "$OUT_BIN" "$ENC_TMP"
+    )
+    mv "$ENC_TMP" "$OUT_BIN"
+    IS_ENCRYPTED="true"
+else
+    IS_ENCRYPTED="false"
+fi
+
 SIZE=$(stat -f%z "$OUT_BIN")
 CRC32=$(python3 -c "import binascii; print(binascii.crc32(open('${OUT_BIN}','rb').read()) & 0xFFFFFFFF)")
 
 URL="${FIRMWARE_BASE_URL}/${VERSION}/firmware.bin"
-TRIGGER_JSON="{\"url\":\"${URL}\",\"version\":\"${VERSION}\",\"size\":${SIZE},\"crc32\":${CRC32}}"
+TRIGGER_JSON="{\"url\":\"${URL}\",\"version\":\"${VERSION}\",\"size\":${SIZE},\"crc32\":${CRC32},\"is_encrypted\":${IS_ENCRYPTED}}"
 
 # Write latest.json at the firmware-host root so the Lambda / server side
 # can publish the latest trigger without recomputing size+CRC.
@@ -127,7 +178,8 @@ echo "    Path:   ${OUT_BIN}"
 echo "    Latest: ${LATEST_JSON}"
 echo "    Size:   ${SIZE} bytes"
 echo "    CRC32:  ${CRC32}"
-echo "    Signed: $([[ $SECURE -eq 1 ]] && echo yes || echo no)"
+echo "    Signed:    $([[ $SECURE -eq 1 ]] && echo yes || echo no)"
+echo "    Encrypted: $([[ $ENCRYPT -eq 1 ]] && echo yes || echo no)"
 echo ""
 echo ">>> MQTT trigger payload (publish to {client_id}/root/ota):"
 echo ""
