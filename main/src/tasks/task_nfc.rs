@@ -15,6 +15,18 @@ use crate::AppFlashStorage as FlashStorage;
 use nfc::{MAX_NFCDATA_SIZE, Nfc, STM25DV64KC};
 use storage::storage::PersistentStorage;
 
+type AppNfc = Nfc<STM25DV64KC, Input<'static>, Output<'static>, I2c<'static, Async>>;
+
+/// Write the device's registration code to the tag so any plain RF read returns
+/// this device's identity. Used to seed the tag at boot and to re-assert it after
+/// every content write that overwrites the tag's NDEF area.
+async fn write_registration_response(nfc: &mut AppNfc, client_id: &str) {
+    match nfc.write_text(&format_registration_response(client_id)).await {
+        Ok(_) => log::info!("✓ Device registration response written"),
+        Err(e) => log::warn!("Write response failed (non-critical): {:?}", e),
+    }
+}
+
 /// Monitors NFC tag for new data and persists it to flash storage
 ///
 /// Watches for RF writes to the NFC tag and parses NDEF records containing:
@@ -24,7 +36,7 @@ use storage::storage::PersistentStorage;
 /// - Live update commands
 #[embassy_executor::task]
 pub async fn task_nfc(
-    mut nfc: Nfc<STM25DV64KC, Input<'static>, Output<'static>, I2c<'static, Async>>,
+    mut nfc: AppNfc,
     notification: Sender<'static, NoopRawMutex, NotificationType, NUM_NOTIFICATION_RECEIVERS>,
     nfc_change: Sender<'static, NoopRawMutex, u32, NUM_NFC_CHANGE_RECEIVERS>,
     client_id: &'static str,
@@ -38,6 +50,8 @@ pub async fn task_nfc(
             return;
         }
     }
+
+    write_registration_response(&mut nfc, client_id).await;
 
     let mut storage = PersistentStorage::new(FlashStorage::default(), &mut []);
     let mut storage_data = [0u8; MAX_NFCDATA_SIZE];
@@ -57,14 +71,6 @@ pub async fn task_nfc(
                     if let Err(e) = data.to_bytes(&mut storage_data) {
                         log::error!("Serialization error: {e:?}");
                         continue 'process;
-                    }
-                    // Write registration code in a structured format for easy parsing
-                    match nfc
-                        .write_text(&format_registration_response(client_id))
-                        .await
-                    {
-                        Ok(_) => log::info!("✓ Device registration response written"),
-                        Err(e) => log::warn!("Write response failed (non-critical): {:?}", e),
                     }
 
                     if let Err(e) = storage.write_bytes(
@@ -130,5 +136,11 @@ pub async fn task_nfc(
             },
             Err(_) => log::error!("Error occurred when NFC NDEF data"),
         }
+
+        // Re-assert the registration code so the tag reverts to "device ID" once
+        // any phone-initiated write has been processed. Skipped via `continue 'process`
+        // when an arm bails out early (e.g. reading back our own response, serialization
+        // error, storage failure) — in those cases re-writing isn't needed or wanted.
+        write_registration_response(&mut nfc, client_id).await;
     }
 }
