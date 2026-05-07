@@ -1,5 +1,6 @@
 //! NFC tag monitoring and data processing
 
+use crate::AppFlashStorage as FlashStorage;
 use crate::NotificationType;
 use crate::tasks::{format_registration_response, is_registration_response};
 use crate::{NUM_NFC_CHANGE_RECEIVERS, NUM_NOTIFICATION_RECEIVERS};
@@ -11,7 +12,6 @@ use esp_hal::{
     gpio::{Input, Output},
     i2c::master::I2c,
 };
-use crate::AppFlashStorage as FlashStorage;
 use nfc::{MAX_NFCDATA_SIZE, Nfc, STM25DV64KC};
 use storage::storage::PersistentStorage;
 
@@ -21,7 +21,10 @@ type AppNfc = Nfc<STM25DV64KC, Input<'static>, Output<'static>, I2c<'static, Asy
 /// this device's identity. Used to seed the tag at boot and to re-assert it after
 /// every content write that overwrites the tag's NDEF area.
 async fn write_registration_response(nfc: &mut AppNfc, client_id: &str) {
-    match nfc.write_text(&format_registration_response(client_id)).await {
+    match nfc
+        .write_text(&format_registration_response(client_id))
+        .await
+    {
         Ok(_) => log::info!("✓ Device registration response written"),
         Err(e) => log::warn!("Write response failed (non-critical): {:?}", e),
     }
@@ -73,6 +76,12 @@ pub async fn task_nfc(
                         continue 'process;
                     }
 
+                    // Write the registration response back BEFORE persisting
+                    // creds — the iOS/web registration flow polls the tag for
+                    // REG:C:<code>;; right after writing WiFi, and having it
+                    // immediately after can speed up the registration process
+                    write_registration_response(&mut nfc, client_id).await;
+
                     if let Err(e) = storage.write_bytes(
                         storage::storage::StorageContents::WifiCredentials,
                         0,
@@ -84,7 +93,10 @@ pub async fn task_nfc(
                     notification.send(NotificationType::WifiCredentials);
                     change_counter = change_counter.wrapping_add(1);
                     nfc_change.send(change_counter);
-                    log::info!("Successfully saved wifi in NVS, nfc_change={}", change_counter)
+                    log::info!(
+                        "Successfully saved wifi in NVS, nfc_change={}",
+                        change_counter
+                    )
                 }
                 nfc::NFCData::Text(ref text) => {
                     log::info!("Text: {text}");
@@ -111,7 +123,10 @@ pub async fn task_nfc(
                     notification.send(NotificationType::DisplayText);
                     change_counter = change_counter.wrapping_add(1);
                     nfc_change.send(change_counter);
-                    log::info!("Sent DisplayText notification, nfc_change={}", change_counter);
+                    log::info!(
+                        "Sent DisplayText notification, nfc_change={}",
+                        change_counter
+                    );
                 }
                 nfc::NFCData::Uri(ref uri) => {
                     log::info!("URI: {uri}");
@@ -130,7 +145,10 @@ pub async fn task_nfc(
                     notification.send(NotificationType::DisplayURL);
                     change_counter = change_counter.wrapping_add(1);
                     nfc_change.send(change_counter);
-                    log::info!("Sent DisplayURL notification, nfc_change={}", change_counter);
+                    log::info!(
+                        "Sent DisplayURL notification, nfc_change={}",
+                        change_counter
+                    );
                 }
                 nfc::NFCData::Unknown => log::error!("Unknown type"),
             },
