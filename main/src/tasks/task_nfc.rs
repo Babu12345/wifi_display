@@ -26,7 +26,7 @@ async fn write_registration_response(nfc: &mut AppNfc, client_id: &str) {
         .await
     {
         Ok(_) => log::info!("✓ Device registration response written"),
-        Err(e) => log::warn!("Write response failed (non-critical): {:?}", e),
+        Err(e) => log::warn!("Write response failed (non-critical): {e:?}"),
     }
 }
 
