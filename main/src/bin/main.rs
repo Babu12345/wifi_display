@@ -107,7 +107,6 @@ fn panic_handler(info: &PanicInfo) -> ! {
     loop {}
 }
 
-// https://github.com/search?q=esp_wifi%3A%3A&type=code
 #[main]
 async fn main(spawner: Spawner) {
     initalize_logger();
