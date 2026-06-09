@@ -44,3 +44,11 @@ pub fn format_registration_response(code: &str) -> heapless::String<64> {
 pub fn is_registration_response(text: &str) -> bool {
     text.starts_with(REGISTRATION_PREFIX)
 }
+
+/// Prefix for the NFC "reset to default" command (full payload `CMD:RESET;;`).
+pub const RESET_COMMAND_PREFIX: &str = "CMD:RESET";
+
+/// Check if text is the reset-to-default command.
+pub fn is_reset_command(text: &str) -> bool {
+    text.starts_with(RESET_COMMAND_PREFIX)
+}

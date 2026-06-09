@@ -2,7 +2,8 @@
 
 use crate::AppFlashStorage as FlashStorage;
 use crate::NotificationType;
-use crate::tasks::{format_registration_response, is_registration_response};
+use crate::nvs;
+use crate::tasks::{format_registration_response, is_registration_response, is_reset_command};
 use crate::{NUM_NFC_CHANGE_RECEIVERS, NUM_NOTIFICATION_RECEIVERS};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, watch::Sender};
 use embassy_time::Duration;
@@ -100,6 +101,24 @@ pub async fn task_nfc(
                 }
                 nfc::NFCData::Text(ref text) => {
                     log::info!("Text: {text}");
+
+                    // Reset-to-default command: erase WiFi creds and re-show
+                    // registration. Handled before storage so it's never displayed.
+                    if is_reset_command(text.as_str()) {
+                        log::info!("Reset-to-default command received via NFC");
+                        match nvs::clear_wifi_credentials() {
+                            Ok(()) => {
+                                log::info!("✓ WiFi credentials cleared, returning to default");
+                                notification.send(NotificationType::ResetToDefault);
+                                change_counter = change_counter.wrapping_add(1);
+                                nfc_change.send(change_counter);
+                            }
+                            Err(e) => log::error!("Reset failed: {e}"),
+                        }
+                        // Re-assert the device identity (the write overwrote the tag).
+                        write_registration_response(&mut nfc, client_id).await;
+                        continue 'process;
+                    }
 
                     // Skip registration response data (written by device, not meant for display)
                     if is_registration_response(text.as_str()) {

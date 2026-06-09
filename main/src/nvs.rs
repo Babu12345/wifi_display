@@ -108,6 +108,30 @@ pub fn load_wifi_credentials(
     }
 }
 
+/// Erase the stored WiFi credentials, returning the device to its
+/// unprovisioned state. Owns its read-back buffer so the NFC task (whose
+/// `PersistentStorage` has an empty buffer) can call it and validate.
+pub fn clear_wifi_credentials() -> Result<(), &'static str> {
+    let mut storage_buf = [0u8; MAX_NFCDATA_SIZE];
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
+
+    storage
+        .clear_storage::<MAX_NFCDATA_SIZE>(StorageContents::WifiCredentials)
+        .map_err(|_| "Failed to erase WiFi credentials")?;
+
+    // Validate: the region must no longer parse as credentials.
+    match load_wifi_credentials(&mut storage) {
+        Ok(_) => {
+            log::error!("WiFi credentials still present after erase");
+            Err("WiFi credentials still present after erase")
+        }
+        Err(_) => {
+            log::info!("WiFi credentials erased and validated");
+            Ok(())
+        }
+    }
+}
+
 /// Load custom display text written by the NFC task.
 pub fn load_display_text(
     storage: &mut PersistentStorage<FlashStorage>,

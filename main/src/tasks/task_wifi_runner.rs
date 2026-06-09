@@ -430,6 +430,21 @@ async fn task_wifi_runner_inner(
                 display_mode = nvs::set_display_mode(DisplayMode::LiveUpdates);
                 true
             }
+            Some(NotificationType::ResetToDefault) => {
+                log::info!("Reset-to-default received via NFC, returning to registration state");
+                display_mode = nvs::set_display_mode(DisplayMode::LiveUpdates);
+                // ssid = None forces the cred-load below to fail (creds erased)
+                // and repaint REGISTRATION_MSG before falling back to defaults.
+                registration_painted = false;
+                ssid = None;
+                password = None;
+                // Drop the stale connection.
+                if matches!(controller.is_started(), Ok(true)) {
+                    controller.disconnect_async().await.ok();
+                    controller.stop_async().await.ok();
+                }
+                false
+            }
             None => false,
         };
 
@@ -598,6 +613,14 @@ async fn task_wifi_runner_inner(
                         NotificationType::WifiCredentials => {
                             // Force reload of WiFi credentials on next iteration
                             ssid = None;
+                        }
+                        NotificationType::ResetToDefault => {
+                            // Creds erased via NFC: ssid = None makes the next
+                            // iteration reload, fail, and repaint registration.
+                            display_mode = nvs::set_display_mode(DisplayMode::LiveUpdates);
+                            registration_painted = false;
+                            ssid = None;
+                            password = None;
                         }
                     }
                 }

@@ -127,4 +127,6 @@ pub enum NotificationType {
     DisplayURL,
     /// Live updates (via MQTT)
     LiveSecureUpdates,
+    /// WiFi credentials erased via NFC — re-show the registration screen
+    ResetToDefault,
 }
