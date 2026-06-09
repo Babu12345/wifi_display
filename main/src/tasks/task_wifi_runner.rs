@@ -30,9 +30,9 @@ use heapless::String;
 use nfc::MAX_NFCDATA_SIZE;
 use storage::storage::PersistentStorage;
 /// WIFI SSID
-pub const DEFAULT_SSID: &str = "HONESTWIFI-2325-2G";
+pub const DEFAULT_SSID: &str = "N/A";
 /// WIFI Password
-pub const DEFAULT_PASSWORD: &str = "9526070855!";
+pub const DEFAULT_PASSWORD: &str = "N/A";
 
 // =============================================================================
 // TIMING CONFIGURATION
