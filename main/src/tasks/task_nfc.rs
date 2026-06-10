@@ -109,6 +109,7 @@ pub async fn task_nfc(
                         match nvs::clear_wifi_credentials() {
                             Ok(()) => {
                                 log::info!("✓ WiFi credentials cleared, returning to default");
+                                nvs::clear_mqtt_topics();
                                 notification.send(NotificationType::ResetToDefault);
                                 change_counter = change_counter.wrapping_add(1);
                                 nfc_change.send(change_counter);

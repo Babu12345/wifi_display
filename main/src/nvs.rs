@@ -249,6 +249,18 @@ pub fn save_mqtt_topics(topics: &Vec<String<64>, MAX_DYNAMIC_TOPICS>) {
     }
 }
 
+/// Erase persisted dynamic MQTT topics. Writing `0xFF` to the header makes
+/// `load_mqtt_topics` treat the region as uninitialized and return empty.
+pub fn clear_mqtt_topics() {
+    let mut storage_buf = [0u8; MQTT_TOPICS_STORAGE_SIZE];
+    let mut storage = PersistentStorage::new(FlashStorage::default(), &mut storage_buf);
+
+    match storage.clear_storage::<MQTT_TOPICS_STORAGE_SIZE>(StorageContents::MqttTopics) {
+        Ok(_) => log::info!("Cleared persisted MQTT topics"),
+        Err(e) => log::error!("Failed to clear MQTT topics: {:?}", e),
+    }
+}
+
 // =============================================================================
 // Tunables
 // =============================================================================
