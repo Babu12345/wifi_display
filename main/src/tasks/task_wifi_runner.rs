@@ -1278,9 +1278,7 @@ async fn handle_live_mqtt_updates<'a>(
                                         true
                                     } else {
                                         log::info!(
-                                            "Rate limited: {} secs since last update, need {} secs",
-                                            elapsed_secs,
-                                            required_secs
+                                            "Rate limited: {elapsed_secs} secs since last update, need {required_secs} secs",
                                         );
                                         false
                                     }
