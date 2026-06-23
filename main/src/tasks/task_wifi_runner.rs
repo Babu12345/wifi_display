@@ -1286,8 +1286,7 @@ async fn handle_live_mqtt_updates<'a>(
                             }
                             Err(e) => {
                                 log::error!(
-                                    "Failed to parse chunk metadata for rate limiting: {}",
-                                    e
+                                    "Failed to parse chunk metadata for rate limiting: {e}",
                                 );
                                 true // Allow processing on parse error
                             }
