@@ -674,9 +674,7 @@ async fn task_wifi_runner_inner(
                         esp_hal::reset::software_reset();
                     }
                 }
-                Err(e) => {
-                    log::error!("MQTT error: {:?}", e);
-                }
+                Err(e) => log::error!("MQTT error: {:?}", e),
             }
 
             // Disconnect and stop WiFi to save power after MQTT session
